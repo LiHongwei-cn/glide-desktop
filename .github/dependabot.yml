@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - directory: /
+    package-ecosystem: github-actions
+    schedule:
+      day: monday
+      interval: weekly
+    open-pull-requests-limit: 5
+  - directory: /
+    package-ecosystem: npm
+    schedule:
+      day: monday
+      interval: weekly
+    open-pull-requests-limit: 5
+  - directory: /src-tauri
+    package-ecosystem: cargo
+    schedule:
+      day: monday
+      interval: weekly
+    open-pull-requests-limit: 5

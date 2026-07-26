@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'"
+    },
+    "windows": [
+      {
+        "center": true,
+        "decorations": true,
+        "height": 780,
+        "minHeight": 560,
+        "minWidth": 760,
+        "resizable": true,
+        "title": "Glide",
+        "transparent": false,
+        "width": 1220
+      }
+    ]
+  },
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "active": true,
+    "category": "Utility",
+    "copyright": "Copyright © 2026 Glide Contributors",
+    "icon": [
+      "icons/macos/icon.png",
+      "icons/macos/icon.icns",
+      "icons/windows/icon.ico"
+    ],
+    "longDescription": "A local-first manager for user-owned personal network deployments.",
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    },
+    "shortDescription": "Personal network deployment manager",
+    "targets": "all"
+  },
+  "identifier": "com.glide.desktop",
+  "plugins": {},
+  "productName": "Glide",
+  "version": "0.2.0"
+}
