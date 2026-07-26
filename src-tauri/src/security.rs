@@ -21,6 +21,15 @@ pub fn secret_exists(reference: String) -> Result<bool, String> {
     }
 }
 
+pub(crate) fn read_secret(reference: &str) -> Result<String, String> {
+    validate_reference(reference)?;
+    let entry = keyring::Entry::new(KEYRING_SERVICE, reference).map_err(safe_keyring_error)?;
+    entry.get_password().map_err(|error| match error {
+        keyring::Error::NoEntry => "系统钥匙串中没有这条线路的管理密码，请重新导入。".into(),
+        other => safe_keyring_error(other),
+    })
+}
+
 #[tauri::command]
 pub fn store_secret(reference: String, secret: String) -> Result<(), String> {
     validate_reference(&reference)?;

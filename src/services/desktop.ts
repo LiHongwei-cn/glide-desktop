@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
-import type { AppState, EndpointProbe, RuntimeInfo } from "@/domain/models";
+import type {
+  AdminInspection,
+  AppState,
+  EndpointProbe,
+  RuntimeInfo,
+} from "@/domain/models";
 import { normalizeAdminEndpoint, redactEndpoint } from "@/domain/validation";
 
 declare global {
@@ -31,7 +36,7 @@ export async function deleteSecret(reference: string): Promise<void> {
 export async function getRuntimeInfo(): Promise<RuntimeInfo> {
   if (!isDesktopRuntime()) {
     return normalizeRuntimeInfo({
-      appVersion: "0.2.1-web",
+      appVersion: "0.2.2-web",
       architecture: navigator.userAgent.includes("ARM") ? "ARM64" : "unknown",
       desktop: false,
       operatingSystem: navigator.platform || "Web",
@@ -47,6 +52,34 @@ export async function loadWorkspaceState(): Promise<unknown | null> {
   }
   const payload = await invoke<string | null>("load_workspace_state");
   return payload ? (JSON.parse(payload) as unknown) : null;
+}
+
+export async function inspectAdminDeployment(
+  endpoint: string,
+  password: string,
+): Promise<AdminInspection> {
+  if (!isDesktopRuntime()) {
+    throw new Error("浏览器预览不能登录管理后台，请使用桌面应用完成验证。");
+  }
+  const normalizedEndpoint = normalizeAdminEndpoint(endpoint).normalizedUrl;
+  return invoke<AdminInspection>("inspect_admin_deployment", {
+    endpoint: normalizedEndpoint,
+    password,
+  });
+}
+
+export async function openAdminEndpoint(endpoint: string): Promise<void> {
+  if (!isDesktopRuntime()) {
+    window.open(
+      normalizeAdminEndpoint(endpoint).normalizedUrl,
+      "_blank",
+      "noopener,noreferrer",
+    );
+    return;
+  }
+  await invoke("open_admin_endpoint", {
+    endpoint: normalizeAdminEndpoint(endpoint).normalizedUrl,
+  });
 }
 
 export async function openOfficialUrl(url: string): Promise<void> {
@@ -78,6 +111,19 @@ export async function probeEndpoints(endpoints: string[]): Promise<EndpointProbe
   return invoke<EndpointProbe[]>("probe_endpoints", { endpoints: normalizedEndpoints });
 }
 
+export async function refreshAdminDeployment(
+  endpoint: string,
+  credentialReference: string,
+): Promise<AdminInspection> {
+  if (!isDesktopRuntime()) {
+    throw new Error("浏览器预览不能读取系统钥匙串，请使用桌面应用刷新。");
+  }
+  return invoke<AdminInspection>("refresh_admin_deployment", {
+    credentialReference,
+    endpoint: normalizeAdminEndpoint(endpoint).normalizedUrl,
+  });
+}
+
 export async function saveWorkspaceState(state: AppState): Promise<void> {
   const payload = JSON.stringify(state);
   if (!isDesktopRuntime()) {
@@ -107,6 +153,13 @@ export async function validateAdminEndpointOnDesktop(endpoint: string): Promise<
     return normalizedEndpoint;
   }
   return invoke<string>("validate_admin_endpoint", { endpoint: normalizedEndpoint });
+}
+
+export function userFacingDesktopError(error: unknown, fallback: string): string {
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
+  return error instanceof Error && error.message ? error.message : fallback;
 }
 
 function normalizeRuntimeInfo(runtimeInfo: RuntimeInfo): RuntimeInfo {

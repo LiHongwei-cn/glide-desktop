@@ -11,8 +11,28 @@ export type ConnectionStatus = "active" | "degraded" | "draft" | "verifying";
 export type CredentialState = "at-risk" | "healthy" | "rotating" | "unverified";
 export type DeviceStatus = "active" | "revoked";
 export type DiagnosticStatus = "failed" | "passed" | "pending" | "warning";
+export type ManagementState = "connected" | "error" | "unverified";
 export type RegionCode = "AUTO" | "HK" | "JP" | "SG" | "TW" | "US" | "UNKNOWN";
 export type RegionVerification = "conflict" | "estimated" | "unverified" | "verified";
+
+export interface AdminInspection {
+  adapter: "cmliu-edgetunnel";
+  authenticated: boolean;
+  configUpdatedAt?: string;
+  credentialFingerprint: string;
+  hostCount: number;
+  nodePathFingerprint: string;
+  preferenceMode: "custom" | "generator" | "random";
+  preferredEndpointCount: number;
+  protocol: string;
+  responseTimeMs: number;
+  skipCertificateVerification: boolean;
+  specifiedPort?: number;
+  subscriptionReady: boolean;
+  transport: string;
+  usageMax?: number;
+  usageTotal?: number;
+}
 
 export interface AppState {
   connectionGroups: ConnectionGroup[];
@@ -121,6 +141,7 @@ export interface RegionEvidence {
 }
 
 export interface RouteCandidate {
+  adminAdapter?: AdminInspection["adapter"];
   adminEndpoint?: string;
   configuredRegion: RegionCode;
   credentialReference?: string;
@@ -131,6 +152,8 @@ export interface RouteCandidate {
   healthScore: number;
   id: string;
   lastCheckedAt?: string;
+  lastManagedAt?: string;
+  managementState?: ManagementState;
   nodePathGroupId: string;
   observedRegion: RegionCode;
   preferredIpCount: number;
@@ -138,6 +161,7 @@ export interface RouteCandidate {
   regionEvidence: RegionEvidence[];
   regionVerification: RegionVerification;
   status: ConnectionStatus;
+  subscriptionReady?: boolean;
   transport: "WebSocket";
   version: string;
 }

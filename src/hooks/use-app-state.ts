@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { initialState } from "@/data/seed";
 import type {
+  AdminInspection,
   AppState,
   ConnectionGroup,
   DeviceCredential,
@@ -13,11 +14,18 @@ import type {
   WorkspacePersistenceStatus,
 } from "@/domain/models";
 import { prepareWorkspaceState, resetLocalUsage } from "@/domain/usage";
+import { redactEndpoint } from "@/domain/validation";
 import { deleteSecret, loadWorkspaceState, saveWorkspaceState } from "@/services/desktop";
 
 interface AppActions {
   addDevice: (device: DeviceCredential) => void;
   addRoute: (route: RouteCandidate) => void;
+  applyAdminInspection: (
+    routeId: string,
+    inspection: AdminInspection,
+    credentialReference?: string,
+    adminEndpoint?: string,
+  ) => void;
   applyRouteChecks: (updates: RouteCheckUpdate[]) => void;
   appendDiagnostic: (run: DiagnosticRun) => void;
   clearDiagnostics: () => void;
@@ -141,6 +149,50 @@ export function useAppState(): AppStore {
     }));
   }, []);
 
+  const applyAdminInspection = useCallback(
+    (
+      routeId: string,
+      inspection: AdminInspection,
+      credentialReference?: string,
+      adminEndpoint?: string,
+    ) => {
+      const managedAt = new Date().toISOString();
+      setState((currentState) => ({
+        ...currentState,
+        connectionGroups: currentState.connectionGroups.map((group) =>
+          summarizeConnectionGroup({
+            ...group,
+            routes: group.routes.map((route) =>
+              route.id === routeId
+                ? {
+                    ...route,
+                    adminAdapter: inspection.adapter,
+                    adminEndpoint: adminEndpoint ?? route.adminEndpoint,
+                    credentialReference:
+                      credentialReference ?? route.credentialReference,
+                    credentialGroupId: `node:${inspection.credentialFingerprint}`,
+                    healthScore: Math.max(route.healthScore, 90),
+                    endpointLabel: adminEndpoint
+                      ? `${redactEndpoint(adminEndpoint)} · 已验证管理登录`
+                      : route.endpointLabel,
+                    lastManagedAt: managedAt,
+                    managementState: "connected",
+                    nodePathGroupId: `path:${inspection.nodePathFingerprint}`,
+                    preferredIpCount: inspection.preferredEndpointCount,
+                    status: "active",
+                    subscriptionReady: inspection.subscriptionReady,
+                    version: inspection.configUpdatedAt ?? "已读取",
+                  }
+                : route,
+            ),
+            updatedAt: managedAt,
+          }),
+        ),
+      }));
+    },
+    [],
+  );
+
   const applyRouteChecks = useCallback((updates: RouteCheckUpdate[]) => {
     const updatesByRouteId = new Map(
       updates.flatMap((update) =>
@@ -257,6 +309,7 @@ export function useAppState(): AppStore {
     () => ({
       addDevice,
       addRoute,
+      applyAdminInspection,
       applyRouteChecks,
       appendDiagnostic,
       clearDiagnostics,
@@ -269,6 +322,7 @@ export function useAppState(): AppStore {
     [
       addDevice,
       addRoute,
+      applyAdminInspection,
       applyRouteChecks,
       appendDiagnostic,
       clearDiagnostics,
@@ -287,16 +341,33 @@ function summarizeConnectionGroup(group: ConnectionGroup): ConnectionGroup {
   if (group.routes.length === 0) {
     return { ...group, healthScore: 0, status: "draft" };
   }
+  const credentialCounts = new Map<string, number>();
+  for (const route of group.routes) {
+    credentialCounts.set(
+      route.credentialGroupId,
+      (credentialCounts.get(route.credentialGroupId) ?? 0) + 1,
+    );
+  }
+  const routes = group.routes.map((route) => {
+    const sharedCredential = (credentialCounts.get(route.credentialGroupId) ?? 0) > 1;
+    if (sharedCredential) {
+      return { ...route, credentialState: "at-risk" as const };
+    }
+    if (route.managementState === "connected") {
+      return { ...route, credentialState: "healthy" as const };
+    }
+    return route;
+  });
   const healthScore = Math.round(
-    group.routes.reduce((total, route) => total + route.healthScore, 0) /
-      group.routes.length,
+    routes.reduce((total, route) => total + route.healthScore, 0) /
+      routes.length,
   );
-  const status = group.routes.some((route) => route.status === "verifying")
+  const status = routes.some((route) => route.status === "verifying")
     ? "verifying"
-    : group.routes.every((route) => route.status === "active")
+    : routes.every((route) => route.status === "active")
       ? "active"
       : "degraded";
-  return { ...group, healthScore, status };
+  return { ...group, healthScore, routes, status };
 }
 
 function retainDiagnostics(

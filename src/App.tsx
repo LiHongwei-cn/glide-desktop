@@ -13,7 +13,7 @@ import { SubscriptionsPage } from "@/pages/SubscriptionsPage";
 import { getRuntimeInfo } from "@/services/desktop";
 
 const defaultRuntimeInfo: RuntimeInfo = {
-  appVersion: "0.2.1",
+  appVersion: "0.2.2",
   architecture: "检测中",
   desktop: false,
   operatingSystem: "检测中",
@@ -72,6 +72,7 @@ export default function App() {
       {activePage === "routes" ? (
         <RoutesPage
           group={primaryGroup}
+          onApplyAdminInspection={actions.applyAdminInspection}
           onNavigate={setActivePage}
           onRemoveRoute={actions.removeRoute}
         />

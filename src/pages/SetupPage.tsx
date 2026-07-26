@@ -15,8 +15,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { Badge, Button } from "@/components/ui";
 import { getRegionName } from "@/domain/health";
 import type {
+  AdminInspection,
   AppPage,
-  EndpointProbe,
   LegacyImportDraft,
   RegionCode,
   RouteCandidate,
@@ -31,10 +31,11 @@ import {
   validateSecretInput,
 } from "@/domain/validation";
 import {
+  inspectAdminDeployment,
   isDesktopRuntime,
   openOfficialUrl,
-  probeEndpoints,
   storeSecret,
+  userFacingDesktopError,
   validateAdminEndpointOnDesktop,
 } from "@/services/desktop";
 
@@ -57,10 +58,10 @@ const emptyDraft: LegacyImportDraft = {
 };
 
 export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
+  const [adminInspection, setAdminInspection] = useState<AdminInspection | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [draft, setDraft] = useState<LegacyImportDraft>(emptyDraft);
   const [error, setError] = useState("");
-  const [inspectionProbe, setInspectionProbe] = useState<EndpointProbe | null>(null);
   const [mode, setMode] = useState<SetupMode>("import");
   const [status, setStatus] = useState<SetupStatus>("idle");
   const [validatedUrl, setValidatedUrl] = useState("");
@@ -81,17 +82,13 @@ export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
       if (routes.some((route) => route.adminEndpoint === endpoint)) {
         throw new Error("这个管理入口已存在，无需重复导入。");
       }
-      const [probe] = await probeEndpoints([endpoint]);
-      if (probe?.status === "failed") {
-        throw new Error(probe.detail);
-      }
-      setInspectionProbe(probe ?? null);
+      const inspection = await inspectAdminDeployment(endpoint, draft.password);
+      setAdminInspection(inspection);
       setValidatedUrl(endpoint);
       setStatus("ready");
     } catch (inspectionError) {
-      setError(
-        inspectionError instanceof Error ? inspectionError.message : "只读检查失败，请稍后重试。",
-      );
+      setAdminInspection(null);
+      setError(userFacingDesktopError(inspectionError, "只读检查失败，请稍后重试。"));
       setStatus("idle");
     }
   }
@@ -106,36 +103,49 @@ export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
       if (routes.some((route) => route.adminEndpoint === endpoint)) {
         throw new Error("这个管理入口已存在，无需重复导入。");
       }
+      if (!adminInspection?.authenticated) {
+        throw new Error("请先验证管理员密码并成功读取配置。");
+      }
       const routeId = crypto.randomUUID();
       const credentialReference = `legacy-admin:${routeId}`;
+      const credentialGroupId = `node:${adminInspection.credentialFingerprint}`;
       if (desktop) {
         await storeSecret(credentialReference, draft.password);
       }
       onAddRoute({
+        adminAdapter: adminInspection.adapter,
         adminEndpoint: endpoint,
         configuredRegion: draft.configuredRegion,
         credentialReference,
-        credentialGroupId: crypto.randomUUID(),
-        credentialState: "unverified",
+        credentialGroupId,
+        credentialState: routes.some(
+          (route) => route.credentialGroupId === credentialGroupId,
+        )
+          ? "at-risk"
+          : "healthy",
         displayName,
-        endpointLabel: `${redactEndpoint(endpoint)} · ${desktop ? "密码已存入系统钥匙串" : "预览未保存密码"}`,
-        healthScore: 0,
+        endpointLabel: `${redactEndpoint(endpoint)} · 已验证管理登录`,
+        healthScore: 90,
         id: routeId,
-        nodePathGroupId: crypto.randomUUID(),
+        lastCheckedAt: new Date().toISOString(),
+        lastManagedAt: new Date().toISOString(),
+        managementState: "connected",
+        nodePathGroupId: `path:${adminInspection.nodePathFingerprint}`,
         observedRegion: "UNKNOWN",
-        preferredIpCount: 0,
+        preferredIpCount: adminInspection.preferredEndpointCount,
         protocol: "VLESS",
         regionEvidence: [],
         regionVerification: "unverified",
-        status: "verifying",
+        status: "active",
+        subscriptionReady: adminInspection.subscriptionReady,
         transport: "WebSocket",
-        version: "待识别",
+        version: adminInspection.configUpdatedAt ?? "已读取",
       });
       setDraft(emptyDraft);
-      setInspectionProbe(null);
+      setAdminInspection(null);
       setStatus("saved");
     } catch (importError) {
-      setError(importError instanceof Error ? importError.message : "导入失败。");
+      setError(userFacingDesktopError(importError, "导入失败。"));
     } finally {
       setConfirming(false);
     }
@@ -143,8 +153,8 @@ export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
 
   function changeMode(nextMode: SetupMode) {
     setDraft(emptyDraft);
+    setAdminInspection(null);
     setError("");
-    setInspectionProbe(null);
     setMode(nextMode);
     setStatus("idle");
     setValidatedUrl("");
@@ -216,9 +226,13 @@ export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
                 desktop={desktop}
                 draft={draft}
                 confirming={confirming}
-                onBack={() => setStatus("idle")}
+                inspection={adminInspection}
+                onBack={() => {
+                  setAdminInspection(null);
+                  setStatus("idle");
+                  setValidatedUrl("");
+                }}
                 onConfirm={() => void confirmImport()}
-                probe={inspectionProbe}
                 validatedUrl={validatedUrl}
               />
             ) : (
@@ -232,7 +246,7 @@ export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
                 <div className="form-heading">
                   <Badge tone="info">只读模式</Badge>
                   <h2>填写连接信息</h2>
-                  <p>先检查地址和连通性，不修改线上配置。</p>
+                  <p>验证密码并读取配置，不修改线上内容。</p>
                 </div>
 
                 <label className="field">
@@ -327,7 +341,7 @@ export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
               text="只允许 HTTPS 公网管理地址"
             />
             <SafetyItem icon={LockKeyhole} text="密码保存在系统钥匙串" />
-            <SafetyItem icon={FileSearch} text="不会自动修改线上配置" />
+            <SafetyItem icon={FileSearch} text="真实登录并只读解析配置" />
             <div className="privacy-note">
               <KeyRound aria-hidden="true" size={18} />
               <p>没有遥测。密码、订阅和完整地址不会进入诊断记录。</p>
@@ -427,36 +441,50 @@ function ImportReview({
   confirming,
   desktop,
   draft,
+  inspection,
   onBack,
   onConfirm,
-  probe,
   validatedUrl,
 }: {
   confirming: boolean;
   desktop: boolean;
   draft: LegacyImportDraft;
+  inspection: AdminInspection | null;
   onBack: () => void;
   onConfirm: () => void;
-  probe: EndpointProbe | null;
   validatedUrl: string;
 }) {
   return (
     <div className="import-review">
-      <Badge tone="positive">地址验证通过</Badge>
+      <Badge tone="positive">登录与配置读取通过</Badge>
       <h2>确认导入范围</h2>
       <div className="review-list">
         <ReviewRow label="线路名称" value={draft.displayName} />
         <ReviewRow label="预期地区" value={getRegionName(draft.configuredRegion)} />
         <ReviewRow label="管理地址" value={redactEndpoint(validatedUrl)} />
         <ReviewRow
-          label="入口检查"
+          label="面板适配"
+          value={inspection ? "cmliu/edgetunnel · 已认证" : "待验证"}
+        />
+        <ReviewRow
+          label="协议"
+          value={inspection?.protocol.toUpperCase() ?? "待识别"}
+        />
+        <ReviewRow
+          label="传输"
+          value={inspection?.transport.toUpperCase() ?? "待识别"}
+        />
+        <ReviewRow
+          label="配置读取"
           value={
-            probe
-              ? `${probe.status === "passed" ? "通过" : "有限通过"}${
-                  probe.durationMs ? ` · ${probe.durationMs} ms` : ""
-                }`
-              : "地址格式已通过"
+            inspection
+              ? `${inspection.hostCount} 个域名 · ${inspection.responseTimeMs} ms`
+              : "待读取"
           }
+        />
+        <ReviewRow
+          label="订阅"
+          value={inspection?.subscriptionReady ? "已生成" : "尚未生成"}
         />
         <ReviewRow
           label="密码处理"
@@ -466,7 +494,11 @@ function ImportReview({
       </div>
       <div className="review-warning">
         <ShieldCheck aria-hidden="true" size={18} />
-        <p>导入后仍不会自动轮换凭据。轮换将作为独立计划展示并再次确认。</p>
+        <p>
+          {inspection?.skipCertificateVerification
+            ? "检测到节点配置跳过证书验证，导入后会保留安全警告。"
+            : "远程配置只读导入；任何后续修改都会单独确认。"}
+        </p>
       </div>
       <div className="form-actions">
         <Button disabled={confirming} onClick={onBack}>

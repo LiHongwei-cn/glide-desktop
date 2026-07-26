@@ -2,6 +2,7 @@ import {
   ArrowRight,
   CircleHelp,
   LoaderCircle,
+  Settings2,
   ShieldAlert,
   ShieldCheck,
   Trash2,
@@ -12,9 +13,11 @@ import { getRegionName, getVerificationLabel } from "@/domain/health";
 import type { RouteCandidate } from "@/domain/models";
 
 export function RouteRow({
+  onManage,
   onRemove,
   route,
 }: {
+  onManage?: (route: RouteCandidate) => void;
   onRemove?: (route: RouteCandidate) => void;
   route: RouteCandidate;
 }) {
@@ -75,8 +78,23 @@ export function RouteRow({
         className={`route-row__credential ${credentialPresentation.className}`}
       >
         <CredentialIcon aria-hidden="true" size={15} />
-        <span>{credentialPresentation.label}</span>
+        <span>
+          {route.managementState === "connected"
+            ? "管理已连接"
+            : credentialPresentation.label}
+        </span>
       </div>
+      {onManage ? (
+        <button
+          aria-label={`管理线路 ${route.displayName}`}
+          className="icon-button route-row__manage"
+          onClick={() => onManage(route)}
+          title="读取管理信息"
+          type="button"
+        >
+          <Settings2 aria-hidden="true" size={15} />
+        </button>
+      ) : null}
       {onRemove ? (
         <button
           aria-label={`移除线路 ${route.displayName}`}
