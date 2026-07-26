@@ -111,6 +111,7 @@ Windows 安装包应在 Windows 构建机生成。正式分发前必须配置可
 
 完整产品方案见 [docs/vpn-automation-product-plan.md](docs/vpn-automation-product-plan.md)。
 上线风险与发布闸门见 [docs/production-readiness.md](docs/production-readiness.md)。
+专业设置流程见 [docs/operating-standard.md](docs/operating-standard.md)。
 安全问题报告方式见 [SECURITY.md](SECURITY.md)。
 
 ## 图标

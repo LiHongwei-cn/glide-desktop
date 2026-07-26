@@ -45,7 +45,10 @@ export function ClientsPage({ runtimeInfo }: { runtimeInfo: RuntimeInfo }) {
         <ShieldCheck aria-hidden="true" size={20} />
         <div>
           <strong>官方下载与签名优先</strong>
-          <p>版本、发布者和哈希清单将在签名元数据服务接入后显示。</p>
+          <p>
+            当前检测为 {runtimeInfo.operatingSystem} · {runtimeInfo.architecture}。
+            只从下列维护者的 Releases 页面选择匹配架构。
+          </p>
         </div>
       </section>
 
@@ -76,6 +79,10 @@ export function ClientsPage({ runtimeInfo }: { runtimeInfo: RuntimeInfo }) {
             <h2>{client.name}</h2>
             <p>{client.summary}</p>
             <dl>
+              <div>
+                <dt>维护者</dt>
+                <dd>{client.publisher}</dd>
+              </div>
               <div>
                 <dt>平台</dt>
                 <dd>{client.operatingSystems.join(" · ")}</dd>

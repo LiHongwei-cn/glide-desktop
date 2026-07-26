@@ -13,7 +13,7 @@ import { SubscriptionsPage } from "@/pages/SubscriptionsPage";
 import { getRuntimeInfo } from "@/services/desktop";
 
 const defaultRuntimeInfo: RuntimeInfo = {
-  appVersion: "0.2.0",
+  appVersion: "0.2.1",
   architecture: "检测中",
   desktop: false,
   operatingSystem: "检测中",
@@ -26,7 +26,25 @@ export default function App() {
   const primaryGroup = state.connectionGroups[0];
 
   useEffect(() => {
-    void getRuntimeInfo().then(setRuntimeInfo);
+    let active = true;
+    void getRuntimeInfo()
+      .then((info) => {
+        if (active) {
+          setRuntimeInfo(info);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setRuntimeInfo((current) => ({
+            ...current,
+            architecture: "检测失败",
+            operatingSystem: "检测失败",
+          }));
+        }
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   return (
@@ -45,10 +63,18 @@ export default function App() {
         />
       ) : null}
       {activePage === "setup" ? (
-        <SetupPage onAddRoute={actions.addRoute} onNavigate={setActivePage} />
+        <SetupPage
+          onAddRoute={actions.addRoute}
+          onNavigate={setActivePage}
+          routes={primaryGroup.routes}
+        />
       ) : null}
       {activePage === "routes" ? (
-        <RoutesPage group={primaryGroup} onNavigate={setActivePage} />
+        <RoutesPage
+          group={primaryGroup}
+          onNavigate={setActivePage}
+          onRemoveRoute={actions.removeRoute}
+        />
       ) : null}
       {activePage === "subscriptions" ? (
         <SubscriptionsPage
@@ -61,6 +87,7 @@ export default function App() {
       {activePage === "diagnostics" ? (
         <DiagnosticsPage
           group={primaryGroup}
+          onApplyRouteChecks={actions.applyRouteChecks}
           onAppendDiagnostic={actions.appendDiagnostic}
           recentDiagnostics={state.recentDiagnostics}
         />

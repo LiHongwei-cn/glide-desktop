@@ -40,6 +40,7 @@ export const clientOptions: ClientOption[] = [
     officialUrl: "https://github.com/clash-verge-rev/clash-verge-rev/releases",
     operatingSystems: ["macOS", "Windows"],
     protocolSupport: ["Clash", "Mihomo"],
+    publisher: "clash-verge-rev",
     summary: "适合需要图形界面与规则分流的桌面用户。",
   },
   {
@@ -50,6 +51,7 @@ export const clientOptions: ClientOption[] = [
     officialUrl: "https://github.com/2dust/v2rayN/releases",
     operatingSystems: ["Windows"],
     protocolSupport: ["VLESS", "Trojan", "Xray"],
+    publisher: "2dust",
     summary: "Windows 上常用的开源客户端，支持直接导入订阅。",
   },
   {
@@ -60,6 +62,7 @@ export const clientOptions: ClientOption[] = [
     officialUrl: "https://github.com/hiddify/hiddify-app/releases",
     operatingSystems: ["macOS", "Windows"],
     protocolSupport: ["VLESS", "Clash", "sing-box"],
+    publisher: "hiddify",
     summary: "跨平台客户端，适合作为 macOS 的简单导入路径。",
   },
 ];

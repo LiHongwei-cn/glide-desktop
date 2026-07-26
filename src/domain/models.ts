@@ -31,6 +31,7 @@ export interface ClientOption {
   officialUrl: string;
   operatingSystems: string[];
   protocolSupport: string[];
+  publisher: string;
   summary: string;
 }
 
@@ -122,6 +123,7 @@ export interface RegionEvidence {
 export interface RouteCandidate {
   adminEndpoint?: string;
   configuredRegion: RegionCode;
+  credentialReference?: string;
   credentialGroupId: string;
   credentialState: CredentialState;
   displayName: string;
@@ -138,6 +140,13 @@ export interface RouteCandidate {
   status: ConnectionStatus;
   transport: "WebSocket";
   version: string;
+}
+
+export interface RouteCheckUpdate {
+  checkedAt: string;
+  healthScore: number;
+  routeIds: string[];
+  status: Extract<ConnectionStatus, "active" | "degraded">;
 }
 
 export interface RuntimeInfo {

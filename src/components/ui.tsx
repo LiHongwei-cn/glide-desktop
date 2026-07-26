@@ -49,26 +49,34 @@ export function Button({
 export function Dialog({ children, description, onClose, open, title }: DialogProps) {
   const descriptionId = useId();
   const dialogReference = useRef<HTMLElement>(null);
+  const onCloseReference = useRef(onClose);
   const titleId = useId();
+
+  useEffect(() => {
+    onCloseReference.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!open) {
       return;
     }
     const previouslyFocusedElement = document.activeElement as HTMLElement | null;
+    const previousBodyOverflow = document.body.style.overflow;
     const dialogElement = dialogReference.current;
-    const focusableElements = getFocusableElements(dialogElement);
+    const initialFocusableElements = getFocusableElements(dialogElement);
     const preferredFormControl = dialogElement?.querySelector<HTMLElement>(
       "input:not(:disabled), select:not(:disabled), textarea:not(:disabled)",
     );
-    (preferredFormControl ?? focusableElements[0])?.focus();
+    document.body.style.overflow = "hidden";
+    (preferredFormControl ?? initialFocusableElements[0])?.focus();
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        onCloseReference.current();
         return;
       }
+      const focusableElements = getFocusableElements(dialogReference.current);
       if (event.key !== "Tab" || focusableElements.length === 0) {
         return;
       }
@@ -85,10 +93,11 @@ export function Dialog({ children, description, onClose, open, title }: DialogPr
 
     document.addEventListener("keydown", handleKeyDown);
     return () => {
+      document.body.style.overflow = previousBodyOverflow;
       document.removeEventListener("keydown", handleKeyDown);
       previouslyFocusedElement?.focus();
     };
-  }, [onClose, open]);
+  }, [open]);
 
   if (!open) {
     return null;

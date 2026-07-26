@@ -15,7 +15,12 @@ import { useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge, Button, Dialog } from "@/components/ui";
 import type { DeviceCredential } from "@/domain/models";
-import { normalizeSubscriptionEndpoint } from "@/domain/validation";
+import {
+  maximumDisplayNameLength,
+  maximumSubscriptionEndpointLength,
+  normalizeDisplayName,
+  normalizeSubscriptionEndpoint,
+} from "@/domain/validation";
 import { isDesktopRuntime, storeSecret } from "@/services/desktop";
 
 interface SubscriptionsPageProps {
@@ -49,28 +54,39 @@ export function SubscriptionsPage({
   async function createDevice() {
     setError("");
     try {
+      const normalizedDeviceName = normalizeDisplayName(deviceName, "设备名称");
+      if (
+        devices.some(
+          (device) =>
+            device.status === "active" &&
+            device.displayName.toLocaleLowerCase() ===
+              normalizedDeviceName.toLocaleLowerCase(),
+        )
+      ) {
+        throw new Error("已有同名的有效设备记录，请使用更容易区分的名称。");
+      }
       const normalizedUrl =
         normalizeSubscriptionEndpoint(subscriptionUrl).normalizedUrl;
       const id = crypto.randomUUID();
       const credentialReference = `device-subscription:${id}`;
-      if (desktop) {
-        await storeSecret(credentialReference, normalizedUrl);
-      }
       const qrDataUrl = await QRCode.toDataURL(normalizedUrl, {
         color: { dark: "#151518", light: "#ffffff" },
         errorCorrectionLevel: "M",
         margin: 2,
         width: 240,
       });
+      if (desktop) {
+        await storeSecret(credentialReference, normalizedUrl);
+      }
       onAddDevice({
         createdAt: new Date().toISOString(),
         credentialReference,
-        displayName: deviceName.trim(),
+        displayName: normalizedDeviceName,
         id,
         status: "active",
       });
       setPairingResult({
-        deviceName: deviceName.trim(),
+        deviceName: normalizedDeviceName,
         qrDataUrl,
         subscriptionUrl: normalizedUrl,
       });
@@ -85,6 +101,7 @@ export function SubscriptionsPage({
 
   function closeAddDialog() {
     setCopied(false);
+    setDeviceName("");
     setDialogOpen(false);
     setError("");
     setPairingResult(null);
@@ -100,6 +117,15 @@ export function SubscriptionsPage({
       setCopied(true);
     } catch {
       setError("复制失败，请在系统设置中允许剪贴板访问后重试。");
+    }
+  }
+
+  async function clearClipboard() {
+    try {
+      await navigator.clipboard.writeText("");
+      setCopied(false);
+    } catch {
+      setError("无法清空剪贴板，请手动复制一段普通文字覆盖订阅。");
     }
   }
 
@@ -218,6 +244,11 @@ export function SubscriptionsPage({
               width="240"
             />
             <p>二维码等同访问凭证。导入客户端后关闭此窗口，不要发送给其他人。</p>
+            {copied ? (
+              <p className="clipboard-warning" role="status">
+                订阅已进入系统剪贴板，可能被剪贴板同步或历史工具读取；导入后请立即清空。
+              </p>
+            ) : null}
             {error ? (
               <p className="form-error" role="alert">
                 {error}
@@ -230,6 +261,15 @@ export function SubscriptionsPage({
               >
                 {copied ? "已复制" : "复制订阅"}
               </Button>
+              {copied ? (
+                <Button
+                  icon={<Trash2 aria-hidden="true" size={15} />}
+                  onClick={() => void clearClipboard()}
+                  variant="tertiary"
+                >
+                  清空剪贴板
+                </Button>
+              ) : null}
               <Button onClick={closeAddDialog} variant="primary">
                 完成
               </Button>
@@ -247,6 +287,7 @@ export function SubscriptionsPage({
               <span>设备名称</span>
               <input
                 autoComplete="off"
+                maxLength={maximumDisplayNameLength}
                 onChange={(event) => setDeviceName(event.target.value)}
                 placeholder="例如：我的 MacBook"
                 value={deviceName}
@@ -257,6 +298,7 @@ export function SubscriptionsPage({
               <input
                 autoCapitalize="none"
                 autoComplete="off"
+                maxLength={maximumSubscriptionEndpointLength}
                 onChange={(event) => setSubscriptionUrl(event.target.value)}
                 placeholder="内容只进入系统钥匙串"
                 spellCheck={false}

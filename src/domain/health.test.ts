@@ -8,6 +8,7 @@ import {
   getIndependentCredentialCount,
   getRegionName,
   getVerificationLabel,
+  scoreEndpointProbe,
 } from "@/domain/health";
 import { createRouteFixtures } from "@/test/fixtures";
 
@@ -38,6 +39,38 @@ describe("computeHealthScore", () => {
         throughputScore: -1,
       }),
     ).toBe(75);
+  });
+});
+
+describe("scoreEndpointProbe", () => {
+  it("scores reachable low-latency endpoints highly", () => {
+    expect(
+      scoreEndpointProbe({
+        detail: "可达",
+        durationMs: 180,
+        endpoint: "••••.example.com",
+        status: "passed",
+      }),
+    ).toBe(90);
+  });
+
+  it("penalizes warnings, failures and slow responses", () => {
+    expect(
+      scoreEndpointProbe({
+        detail: "有限通过",
+        durationMs: 900,
+        endpoint: "••••.example.com",
+        status: "warning",
+      }),
+    ).toBe(35);
+    expect(
+      scoreEndpointProbe({
+        detail: "失败",
+        durationMs: 2100,
+        endpoint: "••••.example.com",
+        status: "failed",
+      }),
+    ).toBe(0);
   });
 });
 

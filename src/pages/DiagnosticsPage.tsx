@@ -3,17 +3,27 @@ import { useState } from "react";
 
 import { PageHeader } from "@/components/PageHeader";
 import { Badge, Button, StatusDot } from "@/components/ui";
-import { findCredentialRisks } from "@/domain/health";
-import type { ConnectionGroup, DiagnosticCheck, DiagnosticRun } from "@/domain/models";
-import { redactEndpoint } from "@/domain/validation";
+import { findCredentialRisks, scoreEndpointProbe } from "@/domain/health";
+import type {
+  ConnectionGroup,
+  DiagnosticCheck,
+  DiagnosticRun,
+  EndpointProbe,
+  RouteCheckUpdate,
+} from "@/domain/models";
 import { probeEndpoints } from "@/services/desktop";
+
+const maximumEndpointsPerRun = 100;
+const probeBatchSize = 20;
 
 export function DiagnosticsPage({
   group,
+  onApplyRouteChecks,
   onAppendDiagnostic,
   recentDiagnostics,
 }: {
   group: ConnectionGroup;
+  onApplyRouteChecks: (updates: RouteCheckUpdate[]) => void;
   onAppendDiagnostic: (run: DiagnosticRun) => void;
   recentDiagnostics: DiagnosticRun[];
 }) {
@@ -24,14 +34,13 @@ export function DiagnosticsPage({
     setRunning(true);
     const startedAt = new Date().toISOString();
     const checks: DiagnosticCheck[] = [];
+    const routeUpdates: RouteCheckUpdate[] = [];
     try {
       const risks = findCredentialRisks(group.routes);
       const conflicts = group.routes.filter(
         (route) => route.regionVerification === "conflict",
       ).length;
-      const endpoints = group.routes.flatMap((route) =>
-        route.adminEndpoint ? [route.adminEndpoint] : [],
-      );
+      const endpointEntries = getEndpointEntries(group).slice(0, maximumEndpointsPerRun);
 
       checks.push({
         detail:
@@ -52,17 +61,54 @@ export function DiagnosticsPage({
         status: conflicts > 0 ? "warning" : "passed",
       });
 
-      if (endpoints.length > 0) {
-        const endpointResults = await probeEndpoints(endpoints);
+      if (endpointEntries.length > 0) {
+        const probePairs: Array<{
+          entry: (typeof endpointEntries)[number];
+          probe: EndpointProbe;
+        }> = [];
+        for (let index = 0; index < endpointEntries.length; index += probeBatchSize) {
+          const batch = endpointEntries.slice(index, index + probeBatchSize);
+          const endpointResults = await probeEndpoints(
+            batch.map((entry) => entry.endpoint),
+          );
+          endpointResults.forEach((probe, resultIndex) => {
+            const entry = batch[resultIndex];
+            if (entry) {
+              probePairs.push({ entry, probe });
+            }
+          });
+        }
         checks.push(
-          ...endpointResults.map((result) => ({
-            detail: result.detail,
-            durationMs: result.durationMs,
+          ...probePairs.map(({ probe }) => ({
+            detail: probe.detail,
+            durationMs: probe.durationMs,
             id: crypto.randomUUID(),
-            label: `管理入口 · ${redactEndpoint(result.endpoint)}`,
-            status: result.status,
+            label: `管理入口 · ${probe.endpoint}`,
+            status: probe.status,
           })),
         );
+        const checkedAt = new Date().toISOString();
+        routeUpdates.push(
+          ...probePairs
+            .filter(({ probe }) => probe.durationMs !== undefined)
+            .map(({ entry, probe }) => ({
+              checkedAt,
+              healthScore: scoreEndpointProbe(probe),
+              routeIds: entry.routeIds,
+              status: probe.status === "passed" ? "active" as const : "degraded" as const,
+            })),
+        );
+        const totalEndpointCount = getEndpointEntries(group).length;
+        if (totalEndpointCount > maximumEndpointsPerRun) {
+          checks.push({
+            detail: `本次已检查前 ${maximumEndpointsPerRun} 个入口，其余 ${
+              totalEndpointCount - maximumEndpointsPerRun
+            } 个将在下次检查。`,
+            id: crypto.randomUUID(),
+            label: "检查批次上限",
+            status: "warning",
+          });
+        }
       } else {
         checks.push({
           detail: "脱敏基线没有完整地址，请通过设置向导逐条导入后再检查。",
@@ -88,6 +134,9 @@ export function DiagnosticsPage({
         id: crypto.randomUUID(),
         startedAt,
       };
+      if (routeUpdates.length > 0) {
+        onApplyRouteChecks(routeUpdates);
+      }
       onAppendDiagnostic(run);
       setRunning(false);
     }
@@ -170,6 +219,26 @@ export function DiagnosticsPage({
       </div>
     </div>
   );
+}
+
+function getEndpointEntries(group: ConnectionGroup): Array<{
+  endpoint: string;
+  routeIds: string[];
+}> {
+  const routesByEndpoint = new Map<string, string[]>();
+  group.routes.forEach((route) => {
+    if (!route.adminEndpoint) {
+      return;
+    }
+    routesByEndpoint.set(route.adminEndpoint, [
+      ...(routesByEndpoint.get(route.adminEndpoint) ?? []),
+      route.id,
+    ]);
+  });
+  return [...routesByEndpoint.entries()].map(([endpoint, routeIds]) => ({
+    endpoint,
+    routeIds,
+  }));
 }
 
 const defaultChecks: DiagnosticCheck[] = [

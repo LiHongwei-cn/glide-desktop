@@ -9,6 +9,7 @@ import type {
   Preferences,
   RegionCode,
   RouteCandidate,
+  RouteCheckUpdate,
   WorkspacePersistenceStatus,
 } from "@/domain/models";
 import { prepareWorkspaceState, resetLocalUsage } from "@/domain/usage";
@@ -17,8 +18,10 @@ import { deleteSecret, loadWorkspaceState, saveWorkspaceState } from "@/services
 interface AppActions {
   addDevice: (device: DeviceCredential) => void;
   addRoute: (route: RouteCandidate) => void;
+  applyRouteChecks: (updates: RouteCheckUpdate[]) => void;
   appendDiagnostic: (run: DiagnosticRun) => void;
   clearDiagnostics: () => void;
+  removeRoute: (routeId: string) => Promise<void>;
   resetUsage: () => void;
   revokeDevice: (deviceId: string) => Promise<void>;
   setPreferredRegion: (groupId: string, region: RegionCode) => void;
@@ -128,12 +131,40 @@ export function useAppState(): AppStore {
       ...currentState,
       connectionGroups: currentState.connectionGroups.map((group, index) =>
         index === 0
-          ? {
+          ? summarizeConnectionGroup({
               ...group,
               routes: [...group.routes, route],
               updatedAt: new Date().toISOString(),
-            }
+            })
           : group,
+      ),
+    }));
+  }, []);
+
+  const applyRouteChecks = useCallback((updates: RouteCheckUpdate[]) => {
+    const updatesByRouteId = new Map(
+      updates.flatMap((update) =>
+        update.routeIds.map((routeId) => [routeId, update] as const),
+      ),
+    );
+    setState((currentState) => ({
+      ...currentState,
+      connectionGroups: currentState.connectionGroups.map((group) =>
+        summarizeConnectionGroup({
+          ...group,
+          routes: group.routes.map((route) => {
+            const update = updatesByRouteId.get(route.id);
+            return update
+              ? {
+                  ...route,
+                  healthScore: update.healthScore,
+                  lastCheckedAt: update.checkedAt,
+                  status: update.status,
+                }
+              : route;
+          }),
+          updatedAt: new Date().toISOString(),
+        }),
       ),
     }));
   }, []);
@@ -159,6 +190,26 @@ export function useAppState(): AppStore {
     setState((currentState) => ({
       ...currentState,
       usage: resetLocalUsage(),
+    }));
+  }, []);
+
+  const removeRoute = useCallback(async (routeId: string) => {
+    const route = stateReference.current.connectionGroups
+      .flatMap((group) => group.routes)
+      .find((item) => item.id === routeId);
+    if (!route) {
+      return;
+    }
+    await deleteSecret(route.credentialReference ?? `legacy-admin:${route.id}`);
+    setState((currentState) => ({
+      ...currentState,
+      connectionGroups: currentState.connectionGroups.map((group) =>
+        summarizeConnectionGroup({
+          ...group,
+          routes: group.routes.filter((item) => item.id !== routeId),
+          updatedAt: new Date().toISOString(),
+        }),
+      ),
     }));
   }, []);
 
@@ -206,8 +257,10 @@ export function useAppState(): AppStore {
     () => ({
       addDevice,
       addRoute,
+      applyRouteChecks,
       appendDiagnostic,
       clearDiagnostics,
+      removeRoute,
       resetUsage,
       revokeDevice,
       setPreferredRegion,
@@ -216,8 +269,10 @@ export function useAppState(): AppStore {
     [
       addDevice,
       addRoute,
+      applyRouteChecks,
       appendDiagnostic,
       clearDiagnostics,
+      removeRoute,
       resetUsage,
       revokeDevice,
       setPreferredRegion,
@@ -226,6 +281,22 @@ export function useAppState(): AppStore {
   );
 
   return { actions, hydrated, persistenceStatus, state };
+}
+
+function summarizeConnectionGroup(group: ConnectionGroup): ConnectionGroup {
+  if (group.routes.length === 0) {
+    return { ...group, healthScore: 0, status: "draft" };
+  }
+  const healthScore = Math.round(
+    group.routes.reduce((total, route) => total + route.healthScore, 0) /
+      group.routes.length,
+  );
+  const status = group.routes.some((route) => route.status === "verifying")
+    ? "verifying"
+    : group.routes.every((route) => route.status === "active")
+      ? "active"
+      : "degraded";
+  return { ...group, healthScore, status };
 }
 
 function retainDiagnostics(

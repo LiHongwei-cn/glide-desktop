@@ -1,5 +1,6 @@
 import type {
   CredentialRisk,
+  EndpointProbe,
   HealthSample,
   RegionCode,
   RegionEvidence,
@@ -22,6 +23,25 @@ export function computeHealthScore(sample: HealthSample): number {
     0.05 * clamp(sample.regionConfidence);
 
   return Math.round(score * 100);
+}
+
+export function scoreEndpointProbe(probe: EndpointProbe): number {
+  const baseScore = {
+    failed: 10,
+    passed: 90,
+    warning: 55,
+  }[probe.status === "pending" ? "warning" : probe.status];
+  const latencyPenalty =
+    probe.durationMs === undefined
+      ? 5
+      : probe.durationMs <= 300
+        ? 0
+        : probe.durationMs <= 800
+          ? 10
+          : probe.durationMs <= 2000
+            ? 20
+            : 30;
+  return Math.max(0, baseScore - latencyPenalty);
 }
 
 export function evaluateRegionEvidence(

@@ -1,10 +1,23 @@
-import { ArrowRight, CircleHelp, LoaderCircle, ShieldAlert, ShieldCheck } from "lucide-react";
+import {
+  ArrowRight,
+  CircleHelp,
+  LoaderCircle,
+  ShieldAlert,
+  ShieldCheck,
+  Trash2,
+} from "lucide-react";
 
 import { Badge } from "@/components/ui";
 import { getRegionName, getVerificationLabel } from "@/domain/health";
 import type { RouteCandidate } from "@/domain/models";
 
-export function RouteRow({ route }: { route: RouteCandidate }) {
+export function RouteRow({
+  onRemove,
+  route,
+}: {
+  onRemove?: (route: RouteCandidate) => void;
+  route: RouteCandidate;
+}) {
   const verificationTone =
     route.regionVerification === "verified"
       ? "positive"
@@ -64,6 +77,17 @@ export function RouteRow({ route }: { route: RouteCandidate }) {
         <CredentialIcon aria-hidden="true" size={15} />
         <span>{credentialPresentation.label}</span>
       </div>
+      {onRemove ? (
+        <button
+          aria-label={`移除线路 ${route.displayName}`}
+          className="icon-button icon-button--danger route-row__remove"
+          onClick={() => onRemove(route)}
+          title="移除线路"
+          type="button"
+        >
+          <Trash2 aria-hidden="true" size={15} />
+        </button>
+      ) : null}
     </article>
   );
 }

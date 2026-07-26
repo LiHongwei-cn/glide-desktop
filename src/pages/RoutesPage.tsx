@@ -1,15 +1,15 @@
-import { Filter, ScanSearch } from "lucide-react";
+import { Filter, ScanSearch, ShieldAlert } from "lucide-react";
 import { useState } from "react";
 
 import { PageHeader } from "@/components/PageHeader";
 import { RouteRow } from "@/components/RouteRow";
-import { Badge, Button } from "@/components/ui";
+import { Badge, Button, Dialog } from "@/components/ui";
 import {
   filterRoutes,
   getIndependentCredentialCount,
 } from "@/domain/health";
 import type { RouteFilter } from "@/domain/health";
-import type { AppPage, ConnectionGroup } from "@/domain/models";
+import type { AppPage, ConnectionGroup, RouteCandidate } from "@/domain/models";
 
 const filterLabels: Record<RouteFilter, string> = {
   all: "全部线路",
@@ -22,16 +22,37 @@ const filterLabels: Record<RouteFilter, string> = {
 export function RoutesPage({
   group,
   onNavigate,
+  onRemoveRoute,
 }: {
   group: ConnectionGroup;
   onNavigate: (page: AppPage) => void;
+  onRemoveRoute: (routeId: string) => Promise<void>;
 }) {
   const [activeFilter, setActiveFilter] = useState<RouteFilter>("all");
+  const [error, setError] = useState("");
+  const [pendingRemoval, setPendingRemoval] = useState<RouteCandidate | null>(null);
+  const [removing, setRemoving] = useState(false);
   const conflictCount = group.routes.filter(
     (route) => route.regionVerification === "conflict",
   ).length;
   const independentCredentialCount = getIndependentCredentialCount(group.routes);
   const visibleRoutes = filterRoutes(group.routes, activeFilter);
+
+  async function confirmRemoval() {
+    if (!pendingRemoval) {
+      return;
+    }
+    setError("");
+    setRemoving(true);
+    try {
+      await onRemoveRoute(pendingRemoval.id);
+      setPendingRemoval(null);
+    } catch {
+      setError("无法清理系统钥匙串中的凭据，线路记录尚未移除。");
+    } finally {
+      setRemoving(false);
+    }
+  }
 
   return (
     <div className="page">
@@ -108,7 +129,11 @@ export function RoutesPage({
             {[...visibleRoutes]
               .sort((routeA, routeB) => routeB.healthScore - routeA.healthScore)
               .map((route) => (
-                <RouteRow key={route.id} route={route} />
+                <RouteRow
+                  key={route.id}
+                  onRemove={setPendingRemoval}
+                  route={route}
+                />
               ))}
           </div>
         ) : (
@@ -118,6 +143,42 @@ export function RoutesPage({
           </div>
         )}
       </section>
+
+      <Dialog
+        description="此操作会同时删除 Glide 在系统钥匙串中保存的对应管理密码。"
+        onClose={() => {
+          if (!removing) {
+            setError("");
+            setPendingRemoval(null);
+          }
+        }}
+        open={Boolean(pendingRemoval)}
+        title="移除这条线路？"
+      >
+        <div className="confirmation-content">
+          <ShieldAlert aria-hidden="true" size={28} />
+          <p>
+            将从本机移除“{pendingRemoval?.displayName}”及其钥匙串凭据，不会修改远端服务器。
+          </p>
+          {error ? (
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          ) : null}
+          <div className="form-actions">
+            <Button disabled={removing} onClick={() => setPendingRemoval(null)}>
+              取消
+            </Button>
+            <Button
+              disabled={removing}
+              onClick={() => void confirmRemoval()}
+              variant="danger"
+            >
+              {removing ? "正在安全移除…" : "移除本机线路"}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
 }

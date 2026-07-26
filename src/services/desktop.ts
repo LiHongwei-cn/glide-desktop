@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 import type { AppState, EndpointProbe, RuntimeInfo } from "@/domain/models";
-import { normalizeAdminEndpoint } from "@/domain/validation";
+import { normalizeAdminEndpoint, redactEndpoint } from "@/domain/validation";
 
 declare global {
   interface Window {
@@ -31,7 +31,7 @@ export async function deleteSecret(reference: string): Promise<void> {
 export async function getRuntimeInfo(): Promise<RuntimeInfo> {
   if (!isDesktopRuntime()) {
     return normalizeRuntimeInfo({
-      appVersion: "0.1.0-web",
+      appVersion: "0.2.1-web",
       architecture: navigator.userAgent.includes("ARM") ? "ARM64" : "unknown",
       desktop: false,
       operatingSystem: navigator.platform || "Web",
@@ -71,7 +71,7 @@ export async function probeEndpoints(endpoints: string[]): Promise<EndpointProbe
   if (!isDesktopRuntime()) {
     return normalizedEndpoints.map((endpoint) => ({
       detail: "浏览器预览不能执行本机 DNS/TLS 检查，请在桌面应用中运行。",
-      endpoint,
+      endpoint: redactEndpoint(endpoint),
       status: "warning",
     }));
   }

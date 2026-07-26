@@ -120,7 +120,7 @@ fn build_pinned_client(hostname: &str, addresses: &[SocketAddr]) -> Result<Clien
         .redirect(Policy::none())
         .resolve_to_addrs(hostname, addresses)
         .timeout(Duration::from_secs(8))
-        .user_agent("Glide-Diagnostics/0.1")
+        .user_agent("Glide-Diagnostics/0.2.1")
         .build()
         .map_err(|_| "无法创建安全诊断客户端。".to_string())
 }
@@ -137,6 +137,9 @@ async fn validate_public_host(url: &Url) -> Result<Vec<SocketAddr>, String> {
 
     if resolved_addresses.is_empty() {
         return Err("域名没有可用地址。".into());
+    }
+    if resolved_addresses.len() > 32 {
+        return Err("域名返回了异常数量的地址，已停止检查。".into());
     }
     if resolved_addresses
         .iter()
@@ -155,21 +158,43 @@ fn is_forbidden_ip(ip_address: IpAddr) -> bool {
 }
 
 fn is_forbidden_ipv4(address: Ipv4Addr) -> bool {
-    address.is_broadcast()
-        || address.is_documentation()
-        || address.is_link_local()
-        || address.is_loopback()
-        || address.is_multicast()
-        || address.is_private()
-        || address.is_unspecified()
+    let [first, second, third, _] = address.octets();
+    first == 0
+        || first == 10
+        || (first == 100 && (64..=127).contains(&second))
+        || first == 127
+        || (first == 169 && second == 254)
+        || (first == 172 && (16..=31).contains(&second))
+        || (first == 192 && second == 0 && third == 0)
+        || (first == 192 && second == 0 && third == 2)
+        || (first == 192 && second == 88 && third == 99)
+        || (first == 192 && second == 168)
+        || (first == 198 && (second == 18 || second == 19))
+        || (first == 198 && second == 51 && third == 100)
+        || (first == 203 && second == 0 && third == 113)
+        || first >= 224
 }
 
 fn is_forbidden_ipv6(address: Ipv6Addr) -> bool {
+    if let Some(mapped_ipv4) = address.to_ipv4() {
+        return is_forbidden_ipv4(mapped_ipv4);
+    }
+    let segments = address.segments();
     address.is_loopback()
         || address.is_multicast()
         || address.is_unique_local()
         || address.is_unicast_link_local()
         || address.is_unspecified()
+        || (segments[0] == 0x0064
+            && segments[1] == 0xff9b
+            && segments[2..6].iter().all(|segment| *segment == 0))
+        || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 1)
+        || (segments[0] == 0x0100 && segments[1..4].iter().all(|segment| *segment == 0))
+        || (segments[0] == 0x2001 && segments[1] == 0)
+        || (segments[0] == 0x2001 && segments[1] & 0xfff0 == 0x0010)
+        || (segments[0] == 0x2001 && segments[1] & 0xfff0 == 0x0020)
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+        || segments[0] == 0x2002
 }
 
 fn redact_endpoint(url: &Url) -> String {
@@ -186,7 +211,23 @@ fn response_to_probe(
     endpoint: String,
     started_at: Instant,
 ) -> EndpointProbe {
-    let (detail, status) = if status_code.is_server_error() {
+    let (detail, status) = if status_code.is_success() {
+        (
+            format!("HTTPS 入口可达，状态 {}。", status_code.as_u16()),
+            "passed",
+        )
+    } else if matches!(
+        status_code,
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::METHOD_NOT_ALLOWED
+    ) {
+        (
+            format!(
+                "HTTPS 入口可达且受到访问控制，状态 {}。",
+                status_code.as_u16()
+            ),
+            "passed",
+        )
+    } else if status_code.is_server_error() {
         (
             format!("入口可达，但服务器返回 {}。", status_code.as_u16()),
             "warning",
@@ -195,8 +236,11 @@ fn response_to_probe(
         ("入口可达并返回重定向；未自动跟随。".into(), "warning")
     } else {
         (
-            format!("HTTPS 入口可达，状态 {}。", status_code.as_u16()),
-            "passed",
+            format!(
+                "入口可达，但返回客户端错误 {}；请核对 /admin 路径。",
+                status_code.as_u16()
+            ),
+            "warning",
         )
     };
     EndpointProbe {
@@ -209,7 +253,11 @@ fn response_to_probe(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_forbidden_ip, parse_admin_endpoint};
+    use std::time::Instant;
+
+    use reqwest::StatusCode;
+
+    use super::{is_forbidden_ip, parse_admin_endpoint, response_to_probe};
 
     #[test]
     fn rejects_insecure_admin_url() {
@@ -225,6 +273,28 @@ mod tests {
     fn blocks_private_ip_addresses() {
         assert!(is_forbidden_ip("127.0.0.1".parse().unwrap()));
         assert!(is_forbidden_ip("10.0.0.1".parse().unwrap()));
+        assert!(is_forbidden_ip("100.64.0.1".parse().unwrap()));
+        assert!(is_forbidden_ip("198.18.0.1".parse().unwrap()));
+        assert!(is_forbidden_ip("::ffff:10.0.0.1".parse().unwrap()));
+        assert!(is_forbidden_ip("2001:db8::1".parse().unwrap()));
         assert!(!is_forbidden_ip("1.1.1.1".parse().unwrap()));
+        assert!(!is_forbidden_ip("2606:4700:4700::1111".parse().unwrap()));
+    }
+
+    #[test]
+    fn classifies_protected_and_missing_admin_endpoints() {
+        let protected = response_to_probe(
+            StatusCode::UNAUTHORIZED,
+            "••••.example.com".into(),
+            Instant::now(),
+        );
+        let missing = response_to_probe(
+            StatusCode::NOT_FOUND,
+            "••••.example.com".into(),
+            Instant::now(),
+        );
+
+        assert_eq!(protected.status, "passed");
+        assert_eq!(missing.status, "warning");
     }
 }

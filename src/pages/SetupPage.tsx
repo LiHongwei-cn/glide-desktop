@@ -21,7 +21,15 @@ import type {
   RegionCode,
   RouteCandidate,
 } from "@/domain/models";
-import { normalizeAdminEndpoint, redactEndpoint } from "@/domain/validation";
+import {
+  maximumAdminEndpointLength,
+  maximumDisplayNameLength,
+  maximumSecretLength,
+  normalizeAdminEndpoint,
+  normalizeDisplayName,
+  redactEndpoint,
+  validateSecretInput,
+} from "@/domain/validation";
 import {
   isDesktopRuntime,
   openOfficialUrl,
@@ -33,6 +41,7 @@ import {
 interface SetupPageProps {
   onAddRoute: (route: RouteCandidate) => void;
   onNavigate: (page: AppPage) => void;
+  routes: RouteCandidate[];
 }
 
 type SetupMode = "create" | "import";
@@ -47,7 +56,7 @@ const emptyDraft: LegacyImportDraft = {
   password: "",
 };
 
-export function SetupPage({ onAddRoute, onNavigate }: SetupPageProps) {
+export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
   const [confirming, setConfirming] = useState(false);
   const [draft, setDraft] = useState<LegacyImportDraft>(emptyDraft);
   const [error, setError] = useState("");
@@ -66,7 +75,12 @@ export function SetupPage({ onAddRoute, onNavigate }: SetupPageProps) {
     setError("");
     setStatus("inspecting");
     try {
+      normalizeDisplayName(draft.displayName, "线路名称");
+      validateSecretInput(draft.password, "管理员密码");
       const endpoint = await validateAdminEndpointOnDesktop(draft.adminUrl);
+      if (routes.some((route) => route.adminEndpoint === endpoint)) {
+        throw new Error("这个管理入口已存在，无需重复导入。");
+      }
       const [probe] = await probeEndpoints([endpoint]);
       if (probe?.status === "failed") {
         throw new Error(probe.detail);
@@ -87,6 +101,11 @@ export function SetupPage({ onAddRoute, onNavigate }: SetupPageProps) {
     setConfirming(true);
     try {
       const endpoint = validatedUrl || normalizeAdminEndpoint(draft.adminUrl).normalizedUrl;
+      const displayName = normalizeDisplayName(draft.displayName, "线路名称");
+      validateSecretInput(draft.password, "管理员密码");
+      if (routes.some((route) => route.adminEndpoint === endpoint)) {
+        throw new Error("这个管理入口已存在，无需重复导入。");
+      }
       const routeId = crypto.randomUUID();
       const credentialReference = `legacy-admin:${routeId}`;
       if (desktop) {
@@ -95,9 +114,10 @@ export function SetupPage({ onAddRoute, onNavigate }: SetupPageProps) {
       onAddRoute({
         adminEndpoint: endpoint,
         configuredRegion: draft.configuredRegion,
+        credentialReference,
         credentialGroupId: crypto.randomUUID(),
         credentialState: "unverified",
-        displayName: draft.displayName.trim(),
+        displayName,
         endpointLabel: `${redactEndpoint(endpoint)} · ${desktop ? "密码已存入系统钥匙串" : "预览未保存密码"}`,
         healthScore: 0,
         id: routeId,
@@ -122,9 +142,12 @@ export function SetupPage({ onAddRoute, onNavigate }: SetupPageProps) {
   }
 
   function changeMode(nextMode: SetupMode) {
+    setDraft(emptyDraft);
     setError("");
+    setInspectionProbe(null);
     setMode(nextMode);
     setStatus("idle");
+    setValidatedUrl("");
   }
 
   return (
@@ -216,6 +239,7 @@ export function SetupPage({ onAddRoute, onNavigate }: SetupPageProps) {
                   <span>线路名称</span>
                   <input
                     autoComplete="off"
+                    maxLength={maximumDisplayNameLength}
                     onChange={(event) =>
                       setDraft((current) => ({ ...current, displayName: event.target.value }))
                     }
@@ -249,6 +273,7 @@ export function SetupPage({ onAddRoute, onNavigate }: SetupPageProps) {
                     autoCapitalize="none"
                     autoComplete="url"
                     inputMode="url"
+                    maxLength={maximumAdminEndpointLength}
                     onChange={(event) =>
                       setDraft((current) => ({ ...current, adminUrl: event.target.value }))
                     }
@@ -262,6 +287,7 @@ export function SetupPage({ onAddRoute, onNavigate }: SetupPageProps) {
                   <span>管理员密码</span>
                   <input
                     autoComplete="current-password"
+                    maxLength={maximumSecretLength}
                     onChange={(event) =>
                       setDraft((current) => ({ ...current, password: event.target.value }))
                     }
@@ -316,6 +342,19 @@ export function SetupPage({ onAddRoute, onNavigate }: SetupPageProps) {
 }
 
 function CreateConnectionPanel() {
+  const [openError, setOpenError] = useState("");
+
+  async function openCloudflare(url: string) {
+    setOpenError("");
+    try {
+      await openOfficialUrl(url);
+    } catch (error) {
+      setOpenError(
+        error instanceof Error ? error.message : "无法打开 Cloudflare 官方页面。",
+      );
+    }
+  }
+
   return (
     <section className="panel oauth-panel">
       <div className="oauth-panel__icon">
@@ -362,18 +401,23 @@ function CreateConnectionPanel() {
       <div className="form-actions">
         <Button
           icon={<ExternalLink aria-hidden="true" size={16} />}
-          onClick={() => void openOfficialUrl("https://dash.cloudflare.com/sign-up")}
+          onClick={() => void openCloudflare("https://dash.cloudflare.com/sign-up")}
           variant="primary"
         >
           打开官方注册页
         </Button>
         <Button
           icon={<ExternalLink aria-hidden="true" size={16} />}
-          onClick={() => void openOfficialUrl("https://dash.cloudflare.com/")}
+          onClick={() => void openCloudflare("https://dash.cloudflare.com/")}
         >
           已有账号，打开控制台
         </Button>
       </div>
+      {openError ? (
+        <p className="form-error" role="alert">
+          {openError}
+        </p>
+      ) : null}
       <small>自动部署按钮会在 OAuth Client ID 与回调地址完成正式配置后开放。</small>
     </section>
   );
