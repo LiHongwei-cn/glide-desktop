@@ -32,8 +32,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:tooling": "node --test scripts/*.node-test.mjs"
   },
   "type": "module",
-  "version": "0.2.2"
+  "version": "0.6.1"
 }

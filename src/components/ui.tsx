@@ -65,7 +65,7 @@ export function Dialog({ children, description, onClose, open, title }: DialogPr
     const dialogElement = dialogReference.current;
     const initialFocusableElements = getFocusableElements(dialogElement);
     const preferredFormControl = dialogElement?.querySelector<HTMLElement>(
-      "input:not(:disabled), select:not(:disabled), textarea:not(:disabled)",
+      '[data-autofocus="true"], input:not(:disabled), select:not(:disabled), textarea:not(:disabled)',
     );
     document.body.style.overflow = "hidden";
     (preferredFormControl ?? initialFocusableElements[0])?.focus();

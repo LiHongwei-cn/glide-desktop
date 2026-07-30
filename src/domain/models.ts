@@ -2,18 +2,17 @@ export type AppPage =
   | "overview"
   | "setup"
   | "routes"
-  | "subscriptions"
   | "clients"
   | "diagnostics"
   | "settings";
 
 export type ConnectionStatus = "active" | "degraded" | "draft" | "verifying";
 export type CredentialState = "at-risk" | "healthy" | "rotating" | "unverified";
-export type DeviceStatus = "active" | "revoked";
 export type DiagnosticStatus = "failed" | "passed" | "pending" | "warning";
 export type ManagementState = "connected" | "error" | "unverified";
 export type RegionCode = "AUTO" | "HK" | "JP" | "SG" | "TW" | "US" | "UNKNOWN";
 export type RegionVerification = "conflict" | "estimated" | "unverified" | "verified";
+export type RouteSelectionMode = "automatic" | "manual";
 
 export interface AdminInspection {
   adapter: "cmliu-edgetunnel";
@@ -36,16 +35,15 @@ export interface AdminInspection {
 
 export interface AppState {
   connectionGroups: ConnectionGroup[];
-  devices: DeviceCredential[];
   preferences: Preferences;
   recentDiagnostics: DiagnosticRun[];
   schemaVersion: number;
-  usage: LocalUsageMetrics;
 }
 
 export interface ClientOption {
   architectures: string[];
   id: string;
+  importNote: string;
   license: string;
   name: string;
   officialUrl: string;
@@ -55,6 +53,55 @@ export interface ClientOption {
   summary: string;
 }
 
+export interface CloudflareAccount {
+  id: string;
+  name: string;
+}
+
+export interface CloudflareAuthorization {
+  accounts: CloudflareAccount[];
+  credentialReference: string;
+}
+
+export interface CloudflareOAuthConfiguration {
+  available: boolean;
+  redirectUri: string;
+  setupMessage: string;
+}
+
+export interface CloudflareOAuthStart {
+  authorizationUrl: string;
+  flowId: string;
+}
+
+export interface CloudflareDeploymentPlan {
+  accountId: string;
+  accountName: string;
+  actions: DeploymentAction[];
+  adminCredentialReference: string;
+  authorizationReference: string;
+  displayName: string;
+  endpointPreview: string;
+  kvTitle: string;
+  planHash: string;
+  scriptName: string;
+  sourceCommit: string;
+  sourceSha256: string;
+  workersSubdomain: string;
+}
+
+export interface CloudflareDeploymentResult {
+  adminEndpoint: string;
+  credentialReference: string;
+  inspection: AdminInspection;
+  subscription: PreparedSubscription;
+}
+
+export interface CredentialVaultStatus {
+  missingReferenceCount: number;
+  ready: boolean;
+}
+
 export interface ConnectionGroup {
   createdAt: string;
   displayName: string;
@@ -62,6 +109,10 @@ export interface ConnectionGroup {
   id: string;
   preferredRegion: RegionCode;
   routes: RouteCandidate[];
+  selectedRouteId?: string;
+  selectionMode: RouteSelectionMode;
+  selectionReason?: string;
+  selectionUpdatedAt?: string;
   status: ConnectionStatus;
   updatedAt: string;
 }
@@ -71,15 +122,6 @@ export interface CredentialRisk {
   code: "duplicate-node-credential" | "duplicate-node-path" | "shared-admin-secret";
   severity: "critical" | "high";
   title: string;
-}
-
-export interface DeviceCredential {
-  createdAt: string;
-  credentialReference: string;
-  displayName: string;
-  id: string;
-  lastUsedAt?: string;
-  status: DeviceStatus;
 }
 
 export interface DiagnosticCheck {
@@ -95,6 +137,12 @@ export interface DiagnosticRun {
   completedAt?: string;
   id: string;
   startedAt: string;
+}
+
+export interface DeploymentAction {
+  action: "create" | "enable" | "reuse";
+  label: string;
+  resource: string;
 }
 
 export interface EndpointProbe {
@@ -121,17 +169,34 @@ export interface LegacyImportDraft {
   configuredRegion: RegionCode;
 }
 
-export interface LocalUsageMetrics {
-  activeDays: string[];
-  firstOpenedAt: string;
-  lastOpenedAt: string;
-  launchCount: number;
-}
-
 export interface Preferences {
   diagnosticsRetentionDays: 7 | 14 | 30;
   reduceMotion: boolean;
   theme: "dark" | "light" | "system";
+}
+
+export interface PreparedSubscription {
+  nodes: SubscriptionNode[];
+  responseTimeMs: number;
+  subscriptionUrl: string;
+}
+
+export interface PreparedSubscriptionNode {
+  displayName: string;
+  nodeUri: string;
+  protocol: string;
+  region: RegionCode;
+  responseTimeMs: number;
+}
+
+export interface OptimizedRouteOption {
+  nodes: SubscriptionNode[];
+  routeId: string;
+  routeName: string;
+  stabilityDeltaMs: number;
+  subscriptionUrl: string;
+  verificationSamples: number;
+  verifiedInMs: number;
 }
 
 export interface RegionEvidence {
@@ -173,11 +238,39 @@ export interface RouteCheckUpdate {
   status: Extract<ConnectionStatus, "active" | "degraded">;
 }
 
+export interface RouteOptimizationResult {
+  availableCount: number;
+  failedCount: number;
+  nodes: SubscriptionNode[];
+  reason: string;
+  routeId: string;
+  routeName?: string;
+  routeOptions?: OptimizedRouteOption[];
+  stabilityDeltaMs?: number;
+  subscriptionUrl?: string;
+  verificationSamples?: number;
+  verifiedInMs?: number;
+}
+
+export interface RouteOptimizationProbe {
+  inspection: AdminInspection;
+  subscription: PreparedSubscription;
+}
+
 export interface RuntimeInfo {
   appVersion: string;
   architecture: string;
   desktop: boolean;
   operatingSystem: string;
+}
+
+export interface SubscriptionNode {
+  displayName: string;
+  id: string;
+  latencyMs?: number;
+  latencyStatus?: "reachable" | "timeout" | "unavailable";
+  protocol: string;
+  region: RegionCode;
 }
 
 export type WorkspacePersistenceStatus = "error" | "loading" | "saved" | "saving";

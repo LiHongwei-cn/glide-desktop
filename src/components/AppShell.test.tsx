@@ -32,7 +32,7 @@ describe("AppShell", () => {
       "page",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "线路" }));
+    fireEvent.click(screen.getByRole("button", { name: "连接" }));
     expect(onNavigate).toHaveBeenCalledWith("routes");
   });
 });

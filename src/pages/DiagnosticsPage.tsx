@@ -11,7 +11,7 @@ import type {
   EndpointProbe,
   RouteCheckUpdate,
 } from "@/domain/models";
-import { probeEndpoints } from "@/services/desktop";
+import { getCredentialVaultStatus, probeEndpoints } from "@/services/desktop";
 
 const maximumEndpointsPerRun = 100;
 const probeBatchSize = 20;
@@ -41,6 +41,13 @@ export function DiagnosticsPage({
         (route) => route.regionVerification === "conflict",
       ).length;
       const endpointEntries = getEndpointEntries(group).slice(0, maximumEndpointsPerRun);
+      const credentialReferences = [
+        ...new Set(
+          group.routes.flatMap((route) =>
+            route.credentialReference ? [route.credentialReference] : [],
+          ),
+        ),
+      ];
 
       checks.push({
         detail:
@@ -60,6 +67,27 @@ export function DiagnosticsPage({
         label: "地区证据",
         status: conflicts > 0 ? "warning" : "passed",
       });
+      try {
+        const vaultStatus = await getCredentialVaultStatus(credentialReferences);
+        checks.push({
+          detail:
+            credentialReferences.length === 0
+              ? "当前没有需要验证的本地管理密码。"
+              : vaultStatus.ready
+                ? `Glide 本机加密目录可读，${credentialReferences.length} 条凭据引用完整。`
+                : `Glide 本机加密目录缺少 ${vaultStatus.missingReferenceCount} 条管理密码，请完成一次性补录。`,
+          id: crypto.randomUUID(),
+          label: "本机凭据目录",
+          status: vaultStatus.ready ? "passed" : "warning",
+        });
+      } catch {
+        checks.push({
+          detail: "Glide 本机加密目录无法读取，请检查磁盘空间、文件权限或凭据文件完整性。",
+          id: crypto.randomUUID(),
+          label: "本机凭据目录",
+          status: "failed",
+        });
+      }
 
       if (endpointEntries.length > 0) {
         const probePairs: Array<{
@@ -246,6 +274,12 @@ const defaultChecks: DiagnosticCheck[] = [
     detail: "等待检查",
     id: "credentials-pending",
     label: "凭据隔离",
+    status: "pending",
+  },
+  {
+    detail: "等待检查",
+    id: "vault-pending",
+    label: "本机凭据目录",
     status: "pending",
   },
   {

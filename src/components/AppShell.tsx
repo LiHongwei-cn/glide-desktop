@@ -1,6 +1,5 @@
 import {
   Activity,
-  AppWindow,
   CircleGauge,
   CloudCog,
   Download,
@@ -36,13 +35,12 @@ interface NavigationItem {
 const primaryNavigation: NavigationItem[] = [
   { icon: LayoutDashboard, id: "overview", label: "首页" },
   { icon: CloudCog, id: "setup", label: "添加连接" },
-  { icon: Network, id: "routes", label: "线路" },
-  { icon: AppWindow, id: "subscriptions", label: "分享" },
-  { icon: Activity, id: "diagnostics", label: "检查" },
+  { icon: Network, id: "routes", label: "连接" },
 ];
 
 const secondaryNavigation: NavigationItem[] = [
   { icon: Download, id: "clients", label: "客户端" },
+  { icon: Activity, id: "diagnostics", label: "故障检查" },
   { icon: Settings, id: "settings", label: "设置" },
 ];
 

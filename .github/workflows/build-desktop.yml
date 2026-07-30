@@ -17,6 +17,10 @@ concurrency:
 jobs:
   build:
     name: Build ${{ matrix.platform }}
+    env:
+      GLIDE_CLOUDFLARE_OAUTH_CLIENT_ID: ${{ vars.GLIDE_CLOUDFLARE_OAUTH_CLIENT_ID }}
+      GLIDE_CLOUDFLARE_OAUTH_SCOPES: ${{ vars.GLIDE_CLOUDFLARE_OAUTH_SCOPES }}
+      RUST_TOOLCHAIN: 1.97.1
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -36,18 +40,18 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           cache: npm
-          node-version: 22
+          node-version: 22.16.0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy,rustfmt
+        run: |
+          rustup toolchain install "${{ env.RUST_TOOLCHAIN }}" --profile minimal --component clippy,rustfmt
+          rustup default "${{ env.RUST_TOOLCHAIN }}"
 
       - name: Install frontend dependencies
         run: npm ci
@@ -58,6 +62,9 @@ jobs:
       - name: Test frontend
         run: npm run test:coverage
 
+      - name: Test release tooling
+        run: npm run test:tooling
+
       - name: Test Rust
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
@@ -67,10 +74,29 @@ jobs:
       - name: Build desktop bundle
         run: npm run tauri -- build --bundles ${{ matrix.bundle }}
 
+      - if: matrix.platform == 'macOS'
+        name: Verify and package macOS app
+        run: |
+          xattr -cr "${{ matrix.bundlePath }}/Glide.app"
+          codesign --force --deep --sign - "${{ matrix.bundlePath }}/Glide.app"
+          codesign --verify --deep --strict --verbose=2 "${{ matrix.bundlePath }}/Glide.app"
+          ditto -c -k --keepParent --norsrc --noextattr "${{ matrix.bundlePath }}/Glide.app" "${{ matrix.bundlePath }}/Glide-macOS.zip"
+          if unzip -Z1 "${{ matrix.bundlePath }}/Glide-macOS.zip" | grep '^__MACOSX/' >/dev/null; then
+            echo "Unexpected macOS metadata found in release archive."
+            exit 1
+          fi
+
+      - name: Generate SHA-256 checksums
+        run: node scripts/generate-checksums.mjs "${{ matrix.bundlePath }}"
+
       - name: Upload unsigned test bundle
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          compression-level: 0
           if-no-files-found: error
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.bundlePath }}
+          path: |
+            ${{ matrix.bundlePath }}/*.exe
+            ${{ matrix.bundlePath }}/*.zip
+            ${{ matrix.bundlePath }}/SHA256SUMS.txt
           retention-days: 7
