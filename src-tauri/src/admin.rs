@@ -7,7 +7,8 @@ use std::{
 use base64::{engine::general_purpose, Engine as _};
 use percent_encoding::percent_decode_str;
 use reqwest::{
-    header::{ACCEPT, CONTENT_TYPE, COOKIE, SET_COOKIE},
+    header::{ACCEPT, CONNECTION, CONTENT_TYPE, COOKIE, SET_COOKIE},
+    redirect::Policy,
     Client, Response, StatusCode,
 };
 use serde::Serialize;
@@ -21,7 +22,8 @@ use zeroize::Zeroize;
 
 use crate::{
     network::{
-        build_pinned_client, parse_admin_endpoint, validate_public_host, validate_public_node_host,
+        build_pinned_client, parse_admin_endpoint, resolve_public_node_host, validate_public_host,
+        NodeResolutionSource,
     },
     security::read_secret,
 };
@@ -29,16 +31,17 @@ use crate::{
 const MAXIMUM_CONFIG_BYTES: usize = 1_048_576;
 const MAXIMUM_NODE_COUNT: usize = 512;
 const MAXIMUM_NODE_NAME_CHARS: usize = 80;
-const MAXIMUM_NODE_PROBE_TARGETS: usize = 24;
+const MAXIMUM_NODE_PROBE_TARGETS: usize = 64;
 const MAXIMUM_NODE_URI_BYTES: usize = 8_192;
 const MAXIMUM_PASSWORD_BYTES: usize = 1_024;
 const MAXIMUM_SUBSCRIPTION_BYTES: usize = 2_097_152;
 const MAXIMUM_SUBSCRIPTION_TOKEN_BYTES: usize = 512;
-const MAXIMUM_CONCURRENT_NODE_PROBES: usize = 4;
-const MINIMUM_CREDIBLE_NODE_LATENCY: Duration = Duration::from_millis(5);
-const NODE_PROBE_BUDGET: Duration = Duration::from_secs(6);
-const NODE_PROBE_TIMEOUT: Duration = Duration::from_millis(1_800);
-const OPTIMIZATION_PROBE_TIMEOUT: Duration = Duration::from_secs(12);
+const MAXIMUM_CONCURRENT_NODE_PROBES: usize = 16;
+const NODE_PROBE_BUDGET: Duration = Duration::from_secs(15);
+const NODE_PROBE_INTERVAL: Duration = Duration::from_millis(35);
+const NODE_PROBE_SAMPLES: usize = 3;
+const NODE_PROBE_TIMEOUT: Duration = Duration::from_millis(2_500);
+const OPTIMIZATION_PROBE_TIMEOUT: Duration = Duration::from_secs(25);
 const ROUTE_REFRESH_TIMEOUT: Duration = Duration::from_secs(8);
 const SUBSCRIPTION_RETRY_DELAY: Duration = Duration::from_millis(350);
 
@@ -76,7 +79,11 @@ pub struct PreparedSubscription {
 pub struct SubscriptionNode {
     display_name: String,
     id: String,
+    latency_jitter_ms: Option<u128>,
+    latency_method: Option<&'static str>,
     latency_ms: Option<u128>,
+    latency_samples: u8,
+    latency_source: Option<&'static str>,
     latency_status: &'static str,
     protocol: String,
     region: String,
@@ -176,7 +183,7 @@ pub async fn probe_route_for_optimization(
     .await
     {
         Ok(result) => result,
-        Err(_) => Err("节点验证超过 12 秒，已跳过这条线路。".to_string()),
+        Err(_) => Err("节点验证超过 25 秒，已跳过这条线路。".to_string()),
     };
     password.zeroize();
     result
@@ -283,14 +290,14 @@ async fn probe_node_entry_latency(nodes: &mut [ParsedSubscriptionNode]) {
     let semaphore = node_probe_semaphore();
     let mut probes = JoinSet::new();
 
-    for (host, port) in targets {
+    for target in targets {
         let semaphore = Arc::clone(&semaphore);
         probes.spawn(async move {
             let Ok(_permit) = semaphore.acquire_owned().await else {
-                return ((host, port), NodeLatency::Unavailable);
+                return (target, NodeLatency::Unavailable);
             };
-            let result = probe_public_node_entry(&host, port).await;
-            ((host, port), result)
+            let result = probe_public_node_entry(&target).await;
+            (target, result)
         });
     }
 
@@ -312,13 +319,20 @@ async fn probe_node_entry_latency(nodes: &mut [ParsedSubscriptionNode]) {
 
     for node in nodes {
         let latency = node_probe_target(&node.uri)
-            .and_then(|target| results.get(&target).copied())
+            .and_then(|target| results.get(&target).cloned())
             .unwrap_or(NodeLatency::Unavailable);
         match latency {
-            NodeLatency::Reachable(latency_ms) => {
-                node.metadata.latency_ms = Some(latency_ms);
+            NodeLatency::Reachable(measurement) => {
+                node.metadata.latency_jitter_ms = Some(measurement.jitter_ms);
+                node.metadata.latency_method = Some(measurement.method.as_str());
+                node.metadata.latency_ms = Some(measurement.median_ms);
+                node.metadata.latency_samples = measurement.samples;
+                node.metadata.latency_source = Some(measurement.source.as_str());
                 node.metadata.latency_status = "reachable";
             }
+            NodeLatency::DnsError => node.metadata.latency_status = "dns-error",
+            NodeLatency::Intercepted => node.metadata.latency_status = "intercepted",
+            NodeLatency::TlsError => node.metadata.latency_status = "tls-error",
             NodeLatency::Timeout => node.metadata.latency_status = "timeout",
             NodeLatency::Unavailable => node.metadata.latency_status = "unavailable",
         }
@@ -333,58 +347,212 @@ fn node_probe_semaphore() -> Arc<Semaphore> {
     )
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum NodeLatency {
-    Reachable(u128),
+    DnsError,
+    Intercepted,
+    Reachable(NodeLatencyMeasurement),
+    TlsError,
     Timeout,
     Unavailable,
 }
 
-fn node_probe_target(uri: &str) -> Option<(String, u16)> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NodeProbeMethod {
+    Tcp,
+    Tls,
+}
+
+impl NodeProbeMethod {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Tls => "tls",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NodeLatencyMeasurement {
+    jitter_ms: u128,
+    method: NodeProbeMethod,
+    median_ms: u128,
+    samples: u8,
+    source: NodeResolutionSource,
+}
+
+#[derive(Clone, Debug, Hash, Ord, PartialEq, Eq, PartialOrd)]
+struct NodeProbeTarget {
+    host: String,
+    port: u16,
+    tls_server_name: Option<String>,
+}
+
+fn node_probe_target(uri: &str) -> Option<NodeProbeTarget> {
     let parsed = Url::parse(uri).ok()?;
     let host = parsed.host_str()?.trim().to_ascii_lowercase();
     let port = parsed.port()?;
     if host.is_empty() {
         return None;
     }
-    Some((host, port))
-}
-
-async fn probe_public_node_entry(host: &str, port: u16) -> NodeLatency {
-    let mut validation_url = match Url::parse("https://glide.invalid/") {
-        Ok(url) => url,
-        Err(_) => return NodeLatency::Unavailable,
-    };
-    if validation_url.set_host(Some(host)).is_err() || validation_url.set_port(Some(port)).is_err()
-    {
-        return NodeLatency::Unavailable;
-    }
-    let addresses = match validate_public_node_host(&validation_url).await {
-        Ok(addresses) => addresses,
-        Err(_) => return NodeLatency::Unavailable,
-    };
-    let started_at = Instant::now();
-    let connection = tokio::time::timeout(NODE_PROBE_TIMEOUT, async {
-        for address in addresses {
-            if TcpStream::connect(address).await.is_ok() {
-                return true;
-            }
-        }
-        false
+    let tls_server_name = probe_tls_server_name(&parsed);
+    Some(NodeProbeTarget {
+        host,
+        port,
+        tls_server_name,
     })
-    .await;
-    match connection {
-        Ok(true) => classify_node_latency(started_at.elapsed()),
-        Ok(false) | Err(_) => NodeLatency::Timeout,
+}
+
+fn probe_tls_server_name(parsed: &Url) -> Option<String> {
+    let mut security = None;
+    let mut sni = None;
+    let mut transport_host = None;
+    for (key, value) in parsed.query_pairs() {
+        match key.to_ascii_lowercase().as_str() {
+            "host" if transport_host.is_none() => transport_host = Some(value.into_owned()),
+            "security" => security = Some(value.to_ascii_lowercase()),
+            "servername" | "sni" if sni.is_none() => sni = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+    let uses_tls = parsed.scheme().eq_ignore_ascii_case("trojan")
+        || matches!(security.as_deref(), Some("tls"));
+    if !uses_tls {
+        return None;
+    }
+    sni.or(transport_host)
+        .or_else(|| parsed.host_str().map(str::to_string))
+        .and_then(|candidate| normalize_probe_server_name(&candidate))
+}
+
+fn normalize_probe_server_name(candidate: &str) -> Option<String> {
+    let candidate = candidate.split(',').next()?.trim();
+    if candidate.is_empty() || candidate.len() > 253 {
+        return None;
+    }
+    let parsed = Url::parse(&format!("https://{candidate}/")).ok()?;
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+    parsed.host_str().map(|host| host.to_ascii_lowercase())
+}
+
+async fn probe_public_node_entry(target: &NodeProbeTarget) -> NodeLatency {
+    let resolution = match resolve_public_node_host(&target.host, target.port).await {
+        Ok(resolution) => resolution,
+        Err(_) => return NodeLatency::DnsError,
+    };
+    if let Some(server_name) = &target.tls_server_name {
+        return probe_tls_entry_latency(server_name, target.port, resolution).await;
+    }
+    probe_tcp_entry_latency(resolution).await
+}
+
+async fn probe_tcp_entry_latency(resolution: crate::network::PublicNodeResolution) -> NodeLatency {
+    let mut samples = Vec::with_capacity(NODE_PROBE_SAMPLES);
+    for sample_index in 0..NODE_PROBE_SAMPLES {
+        let started_at = Instant::now();
+        let connection = tokio::time::timeout(NODE_PROBE_TIMEOUT, async {
+            for address in &resolution.addresses {
+                if TcpStream::connect(*address).await.is_ok() {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        if matches!(connection, Ok(true)) {
+            samples.push(started_at.elapsed().as_millis().max(1));
+        }
+        if sample_index + 1 < NODE_PROBE_SAMPLES {
+            tokio::time::sleep(NODE_PROBE_INTERVAL).await;
+        }
+    }
+
+    if samples.is_empty() {
+        NodeLatency::Timeout
+    } else {
+        summarize_node_latency(samples, resolution.source, NodeProbeMethod::Tcp)
     }
 }
 
-fn classify_node_latency(elapsed: Duration) -> NodeLatency {
-    if elapsed < MINIMUM_CREDIBLE_NODE_LATENCY {
-        NodeLatency::Unavailable
-    } else {
-        NodeLatency::Reachable(elapsed.as_millis())
+async fn probe_tls_entry_latency(
+    server_name: &str,
+    port: u16,
+    resolution: crate::network::PublicNodeResolution,
+) -> NodeLatency {
+    let client = match Client::builder()
+        .connect_timeout(NODE_PROBE_TIMEOUT)
+        .no_proxy()
+        .redirect(Policy::none())
+        .resolve_to_addrs(server_name, &resolution.addresses)
+        .timeout(NODE_PROBE_TIMEOUT)
+        .user_agent("Glide-Node-TLS/0.6.2")
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return NodeLatency::TlsError,
+    };
+    let mut test_url = match Url::parse("https://glide.invalid/") {
+        Ok(url) => url,
+        Err(_) => return NodeLatency::TlsError,
+    };
+    if test_url.set_host(Some(server_name)).is_err() || test_url.set_port(Some(port)).is_err() {
+        return NodeLatency::TlsError;
     }
+
+    let mut samples = Vec::with_capacity(NODE_PROBE_SAMPLES);
+    for sample_index in 0..NODE_PROBE_SAMPLES {
+        let started_at = Instant::now();
+        if client
+            .head(test_url.clone())
+            .header(CONNECTION, "close")
+            .send()
+            .await
+            .is_ok()
+        {
+            samples.push(started_at.elapsed().as_millis().max(1));
+        }
+        if sample_index + 1 < NODE_PROBE_SAMPLES {
+            tokio::time::sleep(NODE_PROBE_INTERVAL).await;
+        }
+    }
+
+    if samples.is_empty() {
+        NodeLatency::TlsError
+    } else {
+        summarize_node_latency(samples, resolution.source, NodeProbeMethod::Tls)
+    }
+}
+
+fn summarize_node_latency(
+    mut samples: Vec<u128>,
+    source: NodeResolutionSource,
+    method: NodeProbeMethod,
+) -> NodeLatency {
+    samples.sort_unstable();
+    let median_ms = if samples.len().is_multiple_of(2) {
+        let upper_index = samples.len() / 2;
+        (samples[upper_index - 1] + samples[upper_index]) / 2
+    } else {
+        samples[samples.len() / 2]
+    };
+    let jitter_ms = samples.last().copied().unwrap_or(median_ms)
+        - samples.first().copied().unwrap_or(median_ms);
+    if method == NodeProbeMethod::Tcp && median_ms < 5 && jitter_ms <= 2 {
+        return NodeLatency::Intercepted;
+    }
+    NodeLatency::Reachable(NodeLatencyMeasurement {
+        jitter_ms,
+        method,
+        median_ms,
+        samples: u8::try_from(samples.len()).unwrap_or(u8::MAX),
+        source,
+    })
 }
 
 async fn fetch_authenticated_config(
@@ -401,7 +569,7 @@ async fn fetch_authenticated_config(
     let hostname = admin_url
         .host_str()
         .ok_or_else(|| "管理地址缺少域名。".to_string())?;
-    let client = build_pinned_client(hostname, &resolved_addresses, "Glide-Admin/0.6.1")?;
+    let client = build_pinned_client(hostname, &resolved_addresses, "Glide-Admin/0.6.2")?;
     let auth_cookie = authenticate(&client, &admin_url, password).await?;
     let config = fetch_config(&client, &admin_url, &auth_cookie).await?;
     Ok(AuthenticatedConfig {
@@ -715,7 +883,11 @@ fn parse_subscription_node(uri: &str) -> Option<ParsedSubscriptionNode> {
     let display_name = sanitize_node_display_name(&decoded_name, &fallback_name);
     let metadata = SubscriptionNode {
         id: fingerprint(uri),
+        latency_jitter_ms: None,
+        latency_method: None,
         latency_ms: None,
+        latency_samples: 0,
+        latency_source: None,
         latency_status: "unavailable",
         protocol: protocol.into(),
         region: infer_node_region(&display_name).into(),
@@ -916,17 +1088,17 @@ fn safe_request_error(error: reqwest::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use base64::{engine::general_purpose, Engine as _};
     use reqwest::header::{HeaderMap, HeaderValue, SET_COOKIE};
     use serde_json::json;
 
     use super::{
-        classify_node_latency, infer_node_region, inspection_from_config, looks_like_subscription,
-        node_probe_target, parse_subscription_nodes, subscription_url_from_config,
-        validate_node_id, NodeLatency, MAXIMUM_CONFIG_BYTES,
+        infer_node_region, inspection_from_config, looks_like_subscription, node_probe_target,
+        parse_subscription_nodes, subscription_url_from_config, summarize_node_latency,
+        validate_node_id, NodeLatency, NodeLatencyMeasurement, NodeProbeMethod, NodeProbeTarget,
+        MAXIMUM_CONFIG_BYTES,
     };
+    use crate::network::NodeResolutionSource;
     use url::Url;
 
     #[test]
@@ -955,14 +1127,32 @@ mod tests {
     }
 
     #[test]
-    fn rejects_implausibly_fast_node_latency_from_local_proxy_interception() {
+    fn summarizes_multiple_public_address_samples_without_discarding_fast_results() {
         assert_eq!(
-            classify_node_latency(Duration::from_millis(1)),
-            NodeLatency::Unavailable
+            summarize_node_latency(
+                vec![19, 1, 15],
+                NodeResolutionSource::TrustedDns,
+                NodeProbeMethod::Tls,
+            ),
+            NodeLatency::Reachable(NodeLatencyMeasurement {
+                jitter_ms: 18,
+                method: NodeProbeMethod::Tls,
+                median_ms: 15,
+                samples: 3,
+                source: NodeResolutionSource::TrustedDns,
+            })
         );
+    }
+
+    #[test]
+    fn rejects_implausible_tcp_results_from_a_transparent_proxy() {
         assert_eq!(
-            classify_node_latency(Duration::from_millis(15)),
-            NodeLatency::Reachable(15)
+            summarize_node_latency(
+                vec![1, 1, 2],
+                NodeResolutionSource::SystemDns,
+                NodeProbeMethod::Tcp,
+            ),
+            NodeLatency::Intercepted,
         );
     }
 
@@ -1146,10 +1336,23 @@ mod tests {
     #[test]
     fn extracts_only_explicit_node_hosts_and_ports_for_latency_probes() {
         assert_eq!(
-            node_probe_target(
-                "vless://00000000-0000-4000-8000-000000000000@edge.example.com:443#Node",
-            ),
-            Some(("edge.example.com".into(), 443)),
+            node_probe_target(concat!(
+                "vless://00000000-0000-4000-8000-000000000000@edge.example.com:443",
+                "?security=tls&sni=origin.example.com#Node",
+            ),),
+            Some(NodeProbeTarget {
+                host: "edge.example.com".into(),
+                port: 443,
+                tls_server_name: Some("origin.example.com".into()),
+            }),
+        );
+        assert_eq!(
+            node_probe_target("ss://method:password@edge.example.com:8388#Node"),
+            Some(NodeProbeTarget {
+                host: "edge.example.com".into(),
+                port: 8388,
+                tls_server_name: None,
+            }),
         );
         assert!(node_probe_target("vless://id@edge.example.com#MissingPort").is_none());
         assert!(node_probe_target("not-a-node-uri").is_none());

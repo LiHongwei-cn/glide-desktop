@@ -102,7 +102,7 @@ export async function deleteSecret(reference: string): Promise<void> {
 export async function getRuntimeInfo(): Promise<RuntimeInfo> {
   if (!isDesktopRuntime()) {
     return normalizeRuntimeInfo({
-      appVersion: "0.6.1-web",
+      appVersion: "0.6.2-web",
       architecture: navigator.userAgent.includes("ARM") ? "ARM64" : "unknown",
       desktop: false,
       operatingSystem: navigator.platform || "Web",

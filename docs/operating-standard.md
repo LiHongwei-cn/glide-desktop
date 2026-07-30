@@ -96,10 +96,11 @@
     时才允许使用单轮结果，并在界面保持降级表述。
 18. 选择单个节点时必须重新读取最新订阅并按哈希标识匹配；节点已消失时要求重新选择，
     不使用内存中的旧 URI。
-19. 优化时可探测订阅中去重后的公开节点主机与端口；全应用最多并发 4 路、单目标
-    1.8 秒、每次最多 24 个目标且总预算 6 秒。结果只称“入口延迟”，不得冒充吞吐
-    速率或真实隧道延迟；DNS Fake-IP 和透明代理截获造成的不可信 0–4 ms 结果必须标为
-    “不可测”，不能显示为真实延迟。
+19. 优化时可探测订阅中去重后的公开节点入口；全应用最多并发 16 路、单次握手
+    2.5 秒、每条线路最多 64 个目标且总预算 15 秒。TLS 节点必须使用订阅中的 SNI
+    完成证书校验和响应头握手，取三次中位数并显示波动；Fake-IP 时只向固定可信 DNS
+    发送节点域名。普通 TCP 的 0–4 ms 本机接管结果必须标为“被本机代理接管”，不能
+    冒充真实延迟。所有结果仍只称“入口延迟”，不得冒充带宽或完整代理隧道延迟。
 20. 选择单节点后必须继续保留整条订阅，复制和二维码分别提供“整条订阅”和“当前节点”
     两组动作，不能互相覆盖。
 
@@ -157,12 +158,12 @@
 流程设计参考了以下成熟开源项目的公开做法，但 Glide 不复制其代理核心：
 
 - [Hiddify App](https://github.com/hiddify/hiddify-app)：重复配置防护、配置验证、HTTPS 订阅和设备端体验
-- [Mihomo](https://github.com/MetaCubeX/mihomo)：健康检查超时、失败阈值、懒检测和
-  `url-test` 切换容差
+- [Mihomo healthcheck.go](https://github.com/MetaCubeX/mihomo/blob/Meta/adapter/provider/healthcheck.go)：
+  通过代理访问测试 URL、健康检查超时、受控并发和按测试 URL 保存结果
 - [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev)：安全草稿更新、
   配置验证、重试回退、错误脱敏和跨平台发布
-- [v2rayN](https://github.com/2dust/v2rayN)：测速分批、并发限制、失败项缩小批次复测和
-  可取消任务
+- [v2rayN SpeedtestService.cs](https://github.com/2dust/v2rayN/blob/master/v2rayN/ServiceLib/Services/SpeedtestService.cs)：
+  区分 TCPing 与真实代理 Ping、测速分批、并发限制和失败项缩小批次复测
 - [Tauri](https://github.com/tauri-apps/tauri)：能力白名单、CSP、签名和桌面 IPC 安全边界
 
 这里只复用公开的工程思想。Glide 的实现为独立编写，不复制 GPL 项目的源码；项目正式

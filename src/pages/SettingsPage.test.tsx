@@ -13,7 +13,7 @@ describe("SettingsPage", () => {
         onUpdatePreferences={vi.fn()}
         preferences={initialState.preferences}
         runtimeInfo={{
-          appVersion: "0.6.1",
+          appVersion: "0.6.2",
           architecture: "ARM64",
           desktop: true,
           operatingSystem: "macOS",

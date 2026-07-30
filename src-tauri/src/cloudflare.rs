@@ -797,7 +797,7 @@ async fn authorize_cloudflare_oauth_code(
     let client = build_pinned_client(
         "dash.cloudflare.com",
         &addresses,
-        "Glide-Cloudflare-OAuth/0.6.1",
+        "Glide-Cloudflare-OAuth/0.6.2",
     )?;
     let body = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("grant_type", "authorization_code")
@@ -843,7 +843,7 @@ async fn authorize_cloudflare_oauth_code(
 async fn cloudflare_client() -> Result<CloudflareClient, String> {
     let base_url = Url::parse(API_BASE).map_err(|_| "Cloudflare API 地址配置无效。".to_string())?;
     let addresses = validate_public_host(&base_url).await?;
-    let http = build_pinned_client("api.cloudflare.com", &addresses, "Glide-Cloudflare/0.6.1")?;
+    let http = build_pinned_client("api.cloudflare.com", &addresses, "Glide-Cloudflare/0.6.2")?;
     Ok(CloudflareClient { base_url, http })
 }
 
@@ -1218,7 +1218,7 @@ async fn download_pinned_source() -> Result<Vec<u8>, String> {
     let client = build_pinned_client(
         "raw.githubusercontent.com",
         &addresses,
-        "Glide-Deployment-Source/0.6.1",
+        "Glide-Deployment-Source/0.6.2",
     )?;
     let response = client
         .get(source_url)
