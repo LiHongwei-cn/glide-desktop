@@ -28,12 +28,12 @@ jobs:
       matrix:
         include:
           - artifact: glide-macos-unsigned
-            bundle: app
+            buildScript: build:desktop:macos
             bundlePath: src-tauri/target/release/bundle/macos
             platform: macOS
             runner: macos-14
           - artifact: glide-windows-unsigned
-            bundle: nsis
+            buildScript: build:desktop:windows
             bundlePath: src-tauri/target/release/bundle/nsis
             platform: Windows
             runner: windows-2022
@@ -72,7 +72,7 @@ jobs:
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 
       - name: Build desktop bundle
-        run: npm run tauri -- build --bundles ${{ matrix.bundle }}
+        run: npm run "${{ matrix.buildScript }}"
 
       - if: matrix.platform == 'macOS'
         name: Verify and package macOS app

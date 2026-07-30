@@ -28,6 +28,8 @@
   "private": true,
   "scripts": {
     "build": "tsc -b && vite build",
+    "build:desktop:macos": "tauri build --bundles app",
+    "build:desktop:windows": "tauri build --bundles nsis",
     "dev": "vite",
     "preview": "vite preview",
     "tauri": "tauri",
