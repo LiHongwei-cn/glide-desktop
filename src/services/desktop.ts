@@ -4,7 +4,16 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   AdminInspection,
   AppState,
+  CloudflareAuthorization,
+  CloudflareDeploymentPlan,
+  CloudflareDeploymentResult,
+  CloudflareOAuthConfiguration,
+  CloudflareOAuthStart,
+  CredentialVaultStatus,
   EndpointProbe,
+  PreparedSubscriptionNode,
+  PreparedSubscription,
+  RouteOptimizationProbe,
   RuntimeInfo,
 } from "@/domain/models";
 import { normalizeAdminEndpoint, redactEndpoint } from "@/domain/validation";
@@ -22,6 +31,63 @@ const trustedOfficialHosts = new Set([
   "github.com",
 ]);
 
+export async function authorizeCloudflare(
+  token: string,
+): Promise<CloudflareAuthorization> {
+  if (!isDesktopRuntime()) {
+    throw new Error("浏览器预览不能连接 Cloudflare，请使用桌面应用完成创建。");
+  }
+  return invoke<CloudflareAuthorization>("authorize_cloudflare", { token });
+}
+
+export async function cancelCloudflareOAuth(flowId: string): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  await invoke("cancel_cloudflare_oauth", { flowId });
+}
+
+export async function completeCloudflareOAuth(
+  flowId: string,
+): Promise<CloudflareAuthorization> {
+  if (!isDesktopRuntime()) {
+    throw new Error("浏览器预览不能接收 Cloudflare 登录回调。");
+  }
+  return invoke<CloudflareAuthorization>("complete_cloudflare_oauth", { flowId });
+}
+
+export async function createCloudflareDeploymentPlan(
+  accountId: string,
+  authorizationReference: string,
+  displayName: string,
+): Promise<CloudflareDeploymentPlan> {
+  if (!isDesktopRuntime()) {
+    throw new Error("浏览器预览不能生成真实部署计划，请使用桌面应用。");
+  }
+  return invoke<CloudflareDeploymentPlan>("create_cloudflare_deployment_plan", {
+    accountId,
+    authorizationReference,
+    displayName,
+  });
+}
+
+export async function deployCloudflareConnection(
+  accountId: string,
+  authorizationReference: string,
+  displayName: string,
+  planHash: string,
+): Promise<CloudflareDeploymentResult> {
+  if (!isDesktopRuntime()) {
+    throw new Error("浏览器预览不能创建云端资源，请使用桌面应用。");
+  }
+  return invoke<CloudflareDeploymentResult>("deploy_cloudflare_connection", {
+    accountId,
+    authorizationReference,
+    displayName,
+    planHash,
+  });
+}
+
 export function isDesktopRuntime(): boolean {
   return typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
 }
@@ -36,13 +102,34 @@ export async function deleteSecret(reference: string): Promise<void> {
 export async function getRuntimeInfo(): Promise<RuntimeInfo> {
   if (!isDesktopRuntime()) {
     return normalizeRuntimeInfo({
-      appVersion: "0.2.2-web",
+      appVersion: "0.6.1-web",
       architecture: navigator.userAgent.includes("ARM") ? "ARM64" : "unknown",
       desktop: false,
       operatingSystem: navigator.platform || "Web",
     });
   }
   return normalizeRuntimeInfo(await invoke<RuntimeInfo>("get_runtime_info"));
+}
+
+export async function getCredentialVaultStatus(
+  references: string[],
+): Promise<CredentialVaultStatus> {
+  if (!isDesktopRuntime()) {
+    return { missingReferenceCount: references.length, ready: false };
+  }
+  return invoke<CredentialVaultStatus>("credential_vault_status", { references });
+}
+
+export async function getCloudflareOAuthConfiguration(
+): Promise<CloudflareOAuthConfiguration> {
+  if (!isDesktopRuntime()) {
+    return {
+      available: false,
+      redirectUri: "http://127.0.0.1:49217/oauth/callback",
+      setupMessage: "请在桌面应用中使用 Cloudflare 登录。",
+    };
+  }
+  return invoke<CloudflareOAuthConfiguration>("cloudflare_oauth_configuration");
 }
 
 export async function loadWorkspaceState(): Promise<unknown | null> {
@@ -111,12 +198,53 @@ export async function probeEndpoints(endpoints: string[]): Promise<EndpointProbe
   return invoke<EndpointProbe[]>("probe_endpoints", { endpoints: normalizedEndpoints });
 }
 
+export async function prepareRouteSubscription(
+  endpoint: string,
+  credentialReference: string,
+): Promise<PreparedSubscription> {
+  if (!isDesktopRuntime()) {
+    throw new Error("浏览器预览不能生成真实订阅，请使用桌面应用。");
+  }
+  return invoke<PreparedSubscription>("prepare_route_subscription", {
+    credentialReference,
+    endpoint: normalizeAdminEndpoint(endpoint).normalizedUrl,
+  });
+}
+
+export async function prepareRouteSubscriptionNode(
+  endpoint: string,
+  credentialReference: string,
+  nodeId: string,
+): Promise<PreparedSubscriptionNode> {
+  if (!isDesktopRuntime()) {
+    throw new Error("浏览器预览不能准备真实节点，请使用桌面应用。");
+  }
+  return invoke<PreparedSubscriptionNode>("prepare_route_subscription_node", {
+    credentialReference,
+    endpoint: normalizeAdminEndpoint(endpoint).normalizedUrl,
+    nodeId,
+  });
+}
+
+export async function probeRouteForOptimization(
+  endpoint: string,
+  credentialReference: string,
+): Promise<RouteOptimizationProbe> {
+  if (!isDesktopRuntime()) {
+    throw new Error("浏览器预览不能运行真实优化，请使用桌面应用。");
+  }
+  return invoke<RouteOptimizationProbe>("probe_route_for_optimization", {
+    credentialReference,
+    endpoint: normalizeAdminEndpoint(endpoint).normalizedUrl,
+  });
+}
+
 export async function refreshAdminDeployment(
   endpoint: string,
   credentialReference: string,
 ): Promise<AdminInspection> {
   if (!isDesktopRuntime()) {
-    throw new Error("浏览器预览不能读取系统钥匙串，请使用桌面应用刷新。");
+    throw new Error("浏览器预览不能读取本机凭据目录，请使用桌面应用刷新。");
   }
   return invoke<AdminInspection>("refresh_admin_deployment", {
     credentialReference,
@@ -145,6 +273,23 @@ export async function storeSecret(reference: string, secret: string): Promise<vo
     throw new Error("浏览器预览不会保存密码，请使用桌面应用完成导入。");
   }
   await invoke("store_secret", { reference, secret });
+}
+
+export async function storeSharedSecret(
+  references: string[],
+  secret: string,
+): Promise<void> {
+  if (!isDesktopRuntime()) {
+    throw new Error("浏览器预览不会保存密码，请使用桌面应用完成设置。");
+  }
+  await invoke("store_shared_secret", { references, secret });
+}
+
+export async function startCloudflareOAuth(): Promise<CloudflareOAuthStart> {
+  if (!isDesktopRuntime()) {
+    throw new Error("浏览器预览不能启动 Cloudflare 登录。");
+  }
+  return invoke<CloudflareOAuthStart>("start_cloudflare_oauth");
 }
 
 export async function validateAdminEndpointOnDesktop(endpoint: string): Promise<string> {

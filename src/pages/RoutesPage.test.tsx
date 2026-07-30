@@ -31,7 +31,7 @@ describe("RoutesPage", () => {
     vi.clearAllMocks();
   });
 
-  it("filters routes and opens diagnostics from deep validation", () => {
+  it("shows only real connection actions", () => {
     const onApplyAdminInspection = vi.fn();
     const onNavigate = vi.fn();
     const onRemoveRoute = vi.fn().mockResolvedValue(undefined);
@@ -49,16 +49,12 @@ describe("RoutesPage", () => {
     );
 
     expect(container.querySelectorAll(".route-row")).toHaveLength(5);
-    fireEvent.change(screen.getByLabelText("筛选线路"), {
-      target: { value: "verified" },
-    });
-    expect(container.querySelectorAll(".route-row")).toHaveLength(1);
-    expect(screen.getByText("线路 2")).toBeInTheDocument();
+    expect(screen.queryByLabelText("筛选线路")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "深度验证" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "添加连接" }));
+    expect(onNavigate).toHaveBeenCalledWith("setup");
 
-    fireEvent.click(screen.getByRole("button", { name: "深度验证" }));
-    expect(onNavigate).toHaveBeenCalledWith("diagnostics");
-
-    fireEvent.click(screen.getByRole("button", { name: "移除线路 线路 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "移除连接 线路 2" }));
     expect(screen.getByRole("heading", { name: "移除这条线路？" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "移除本机线路" }));
     expect(onRemoveRoute).toHaveBeenCalledWith("test-route-jp");
@@ -99,11 +95,11 @@ describe("RoutesPage", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "管理线路 线路 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "管理连接 线路 1" }));
 
     expect(await screen.findByText("管理连接已验证")).toBeInTheDocument();
     expect(screen.getByText("VLESS / WS")).toBeInTheDocument();
-    expect(screen.getByText("12 / 100,000")).toBeInTheDocument();
+    expect(screen.getByText("已生成")).toBeInTheDocument();
     expect(onApplyAdminInspection).toHaveBeenCalledWith(route.id, inspection);
   });
 
@@ -146,7 +142,7 @@ describe("RoutesPage", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "管理线路 线路 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "管理连接 线路 1" }));
     fireEvent.change(screen.getByLabelText(/^管理后台地址$/), {
       target: { value: "https://private.example.com/admin" },
     });
@@ -210,7 +206,7 @@ describe("RoutesPage", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "管理线路 线路 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "管理连接 线路 1" }));
     expect(await screen.findByText("更新管理凭据")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/^管理员密码$/), {
       target: { value: "updated-local-password" },

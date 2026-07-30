@@ -98,7 +98,7 @@
 在继续扩展功能前，建议按以下顺序处理现网：
 
 1. 备份五套实例的非敏感配置摘要和资源 ID，建立可回滚点。
-2. 为五套管理入口生成互不相同的随机密码，并保存在系统密码管理器。
+2. 为五套管理入口生成互不相同的随机密码，并保存在 Glide 专属本机加密凭据目录。
 3. 为每套实例轮换独立 UUID、路径和订阅鉴权 Token；旧凭据保留短暂迁移窗口后撤销。
 4. 清空或禁用 Global API Key 兼容路径，改用最小权限 API Token；新产品上线后迁移到 OAuth。
 5. 从中国移动、电信、联通的真实终端分别执行出口地区、TLS、WebSocket、会话存活和吞吐验证。
@@ -320,7 +320,7 @@ Apple 的侧边栏设计原则可参考：[Human Interface Guidelines — Sideba
 | FR-01 | Cloudflare OAuth 授权 | 不要求用户粘贴全局 API Key；可以在 Cloudflare 页面撤销授权 |
 | FR-02 | 部署前计划 | 明确列出将创建或修改的 KV、Pages、域名和 DNS |
 | FR-03 | 幂等部署 | 重复执行不会创建重复资源，意外退出后可以继续 |
-| FR-04 | 安全凭证存储 | macOS Keychain / Windows Credential Manager 中保存；数据库只存引用 |
+| FR-04 | 安全凭证存储 | Glide 专属目录中的加密凭据数据库；普通工作区数据库只存引用，不请求电脑密码 |
 | FR-05 | DNS 与证书检测 | 轮询权威 DNS、Cloudflare 状态和 TLS 证书，超时后给出可行动提示 |
 | FR-06 | 端到端验证 | 从用户设备验证 DNS、TCP/TLS、WebSocket/应用协议和基础出口信息 |
 | FR-07 | 订阅管理 | 每台设备独立订阅，支持复制、二维码、轮换和撤销 |
@@ -375,7 +375,7 @@ Apple 的侧边栏设计原则可参考：[Human Interface Guidelines — Sideba
 - 系统层与自动化引擎：Rust
 - UI：React + TypeScript
 - 本地数据：SQLite，仅存非敏感元数据
-- 密钥：macOS Keychain / Windows Credential Manager
+- 密钥：Glide 专属目录中的随机本机密钥；与加密凭据数据库分文件并限制当前用户访问
 - 状态管理：明确的部署状态机
 - 更新：Tauri signed updater + macOS/Windows 平台签名
 - 后端：MVP 尽量不设中心后端；仅保留签名版本清单、帮助中心和可选遥测端点

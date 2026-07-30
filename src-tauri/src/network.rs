@@ -52,6 +52,17 @@ pub fn redact_endpoint(url: &Url) -> String {
 }
 
 pub async fn validate_public_host(url: &Url) -> Result<Vec<SocketAddr>, String> {
+    validate_resolved_host(url, true).await
+}
+
+pub async fn validate_public_node_host(url: &Url) -> Result<Vec<SocketAddr>, String> {
+    validate_resolved_host(url, false).await
+}
+
+async fn validate_resolved_host(
+    url: &Url,
+    allow_tls_proxy_fake_ip: bool,
+) -> Result<Vec<SocketAddr>, String> {
     let hostname = url
         .host_str()
         .ok_or_else(|| "管理地址缺少域名。".to_string())?;
@@ -62,7 +73,7 @@ pub async fn validate_public_host(url: &Url) -> Result<Vec<SocketAddr>, String> 
         .unwrap_or_default();
 
     if addresses_are_public(&system_addresses)
-        || addresses_are_tls_proxy_fake_ips(&system_addresses)
+        || (allow_tls_proxy_fake_ip && addresses_are_tls_proxy_fake_ips(&system_addresses))
     {
         return Ok(system_addresses);
     }

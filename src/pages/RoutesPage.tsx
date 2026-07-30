@@ -1,8 +1,7 @@
 import {
   ExternalLink,
-  Filter,
+  Plus,
   RefreshCw,
-  ScanSearch,
   ServerCog,
   ShieldAlert,
   ShieldCheck,
@@ -12,11 +11,6 @@ import { useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { RouteRow } from "@/components/RouteRow";
 import { Badge, Button, Dialog } from "@/components/ui";
-import {
-  filterRoutes,
-  getIndependentCredentialCount,
-} from "@/domain/health";
-import type { RouteFilter } from "@/domain/health";
 import type {
   AdminInspection,
   AppPage,
@@ -37,14 +31,6 @@ import {
   validateAdminEndpointOnDesktop,
 } from "@/services/desktop";
 
-const filterLabels: Record<RouteFilter, string> = {
-  all: "全部线路",
-  conflict: "地区冲突",
-  risk: "凭据风险",
-  unverified: "待验证",
-  verified: "已验证",
-};
-
 export function RoutesPage({
   group,
   onApplyAdminInspection,
@@ -61,7 +47,6 @@ export function RoutesPage({
   onNavigate: (page: AppPage) => void;
   onRemoveRoute: (routeId: string) => Promise<void>;
 }) {
-  const [activeFilter, setActiveFilter] = useState<RouteFilter>("all");
   const [error, setError] = useState("");
   const [managementError, setManagementError] = useState("");
   const [managementInspection, setManagementInspection] =
@@ -74,11 +59,6 @@ export function RoutesPage({
     useState<RouteCandidate | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<RouteCandidate | null>(null);
   const [removing, setRemoving] = useState(false);
-  const conflictCount = group.routes.filter(
-    (route) => route.regionVerification === "conflict",
-  ).length;
-  const independentCredentialCount = getIndependentCredentialCount(group.routes);
-  const visibleRoutes = filterRoutes(group.routes, activeFilter);
   const requiresCredentialInput =
     !pendingManagement?.credentialReference || managementRepairing;
 
@@ -92,7 +72,7 @@ export function RoutesPage({
       await onRemoveRoute(pendingRemoval.id);
       setPendingRemoval(null);
     } catch {
-      setError("无法清理系统钥匙串中的凭据，线路记录尚未移除。");
+      setError("无法清理 Glide 本机加密目录，连接记录尚未移除。");
     } finally {
       setRemoving(false);
     }
@@ -203,75 +183,28 @@ export function RoutesPage({
     <div className="page">
       <PageHeader
         actions={
-          <>
-            <label className="route-filter">
-              <Filter aria-hidden="true" size={15} />
-              <span className="sr-only">筛选线路</span>
-              <select
-                aria-label="筛选线路"
-                onChange={(event) => setActiveFilter(event.target.value as RouteFilter)}
-                value={activeFilter}
-              >
-                {Object.entries(filterLabels).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Button
-              icon={<ScanSearch aria-hidden="true" size={16} />}
-              onClick={() => onNavigate("diagnostics")}
-              variant="primary"
-            >
-              深度验证
-            </Button>
-          </>
+          <Button
+            icon={<Plus aria-hidden="true" size={16} />}
+            onClick={() => onNavigate("setup")}
+            variant="primary"
+          >
+            添加连接
+          </Button>
         }
-        subtitle="线路名称、实际出口、凭据状态和性能分别展示，避免虚假的国家确定性。"
-        title="线路"
+        subtitle="读取状态、更新后台密码或移除本机记录。"
+        title="连接"
       />
-
-      <section className="route-summary">
-        <div>
-          <span>候选线路</span>
-          <strong>{group.routes.length}</strong>
-        </div>
-        <div>
-          <span>地区冲突</span>
-          <strong>{conflictCount}</strong>
-        </div>
-        <div>
-          <span>独立节点身份</span>
-          <strong>{independentCredentialCount}</strong>
-        </div>
-        <Badge
-          tone={
-            group.routes.length === 0
-              ? "neutral"
-              : independentCredentialCount === group.routes.length
-                ? "positive"
-                : "critical"
-          }
-        >
-          {group.routes.length === 0
-            ? "尚未添加线路"
-            : independentCredentialCount === group.routes.length
-              ? "凭据故障域已隔离"
-              : "当前不具备独立线路容灾"}
-        </Badge>
-      </section>
 
       <section className="panel">
         <div className="panel__header">
           <div>
-            <h2>全部候选线路</h2>
-            <p>按健康度排列；共享凭据线路会被标记为同一故障域。</p>
+            <h2>已添加 {group.routes.length} 条</h2>
+            <p>点击设置按钮读取最新状态；垃圾桶只移除本机记录。</p>
           </div>
         </div>
-        {visibleRoutes.length > 0 ? (
+        {group.routes.length > 0 ? (
           <div className="route-list route-list--detailed">
-            {[...visibleRoutes]
+            {[...group.routes]
               .sort((routeA, routeB) => routeB.healthScore - routeA.healthScore)
               .map((route) => (
                 <RouteRow
@@ -284,8 +217,8 @@ export function RoutesPage({
           </div>
         ) : (
           <div className="route-filter-empty" role="status">
-            <strong>此筛选条件下没有线路</strong>
-            <p>选择“全部线路”查看完整列表，或导入新的管理入口。</p>
+            <strong>还没有连接</strong>
+            <p>点击右上角“添加连接”开始。</p>
           </div>
         )}
       </section>
@@ -354,10 +287,6 @@ export function RoutesPage({
                   value={`${managementInspection.protocol.toUpperCase()} / ${managementInspection.transport.toUpperCase()}`}
                 />
                 <ManagementMetric
-                  label="优选模式"
-                  value={getPreferenceModeLabel(managementInspection.preferenceMode)}
-                />
-                <ManagementMetric
                   label="候选入口"
                   value={managementInspection.preferredEndpointCount}
                 />
@@ -374,15 +303,6 @@ export function RoutesPage({
                   value={`${managementInspection.responseTimeMs} ms`}
                 />
               </div>
-              {managementInspection.usageMax !== undefined ? (
-                <div className="management-usage">
-                  <span>Cloudflare 本期请求</span>
-                  <strong>
-                    {(managementInspection.usageTotal ?? 0).toLocaleString()} /{" "}
-                    {managementInspection.usageMax.toLocaleString()}
-                  </strong>
-                </div>
-              ) : null}
               {managementInspection.skipCertificateVerification ? (
                 <p className="management-warning" role="status">
                   <ShieldAlert aria-hidden="true" size={17} />
@@ -399,7 +319,7 @@ export function RoutesPage({
                   {managementRepairing ? "更新管理凭据" : "连接旧线路"}
                 </strong>
                 <p>
-                  验证成功后更新系统钥匙串，不删除线路，不修改远端配置。
+                  验证成功后更新 Glide 本机加密目录，不删除连接，不修改远端配置。
                 </p>
               </div>
               <label className="field">
@@ -423,7 +343,7 @@ export function RoutesPage({
                   disabled={managementLoading}
                   maxLength={maximumSecretLength}
                   onChange={(event) => setManagementPassword(event.target.value)}
-                  placeholder="验证后保存到系统钥匙串"
+                  placeholder="验证后保存到 Glide 本机加密目录"
                   type="password"
                   value={managementPassword}
                 />
@@ -476,7 +396,7 @@ export function RoutesPage({
       </Dialog>
 
       <Dialog
-        description="此操作会同时删除 Glide 在系统钥匙串中保存的对应管理密码。"
+        description="此操作会同时删除 Glide 在本机加密目录中保存的对应管理密码。"
         onClose={() => {
           if (!removing) {
             setError("");
@@ -489,7 +409,7 @@ export function RoutesPage({
         <div className="confirmation-content">
           <ShieldAlert aria-hidden="true" size={28} />
           <p>
-            将从本机移除“{pendingRemoval?.displayName}”及其钥匙串凭据，不会修改远端服务器。
+            将从本机移除“{pendingRemoval?.displayName}”及其本地凭据，不会修改远端服务器。
           </p>
           {error ? (
             <p className="form-error" role="alert">
@@ -514,18 +434,8 @@ export function RoutesPage({
   );
 }
 
-function getPreferenceModeLabel(
-  mode: AdminInspection["preferenceMode"],
-): string {
-  return {
-    custom: "自定义",
-    generator: "优选生成器",
-    random: "随机优选",
-  }[mode];
-}
-
 function shouldRepairCredential(message: string): boolean {
-  return ["密码", "钥匙串", "管理会话被拒绝"].some((keyword) =>
+  return ["密码", "凭据", "管理会话被拒绝"].some((keyword) =>
     message.includes(keyword),
   );
 }

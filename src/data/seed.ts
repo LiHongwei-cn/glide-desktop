@@ -11,30 +11,25 @@ export const initialState: AppState = {
       id: "primary-connection-group",
       preferredRegion: "AUTO",
       routes: [],
+      selectionMode: "automatic",
       status: "draft",
       updatedAt: now,
     },
   ],
-  devices: [],
   preferences: {
     diagnosticsRetentionDays: 7,
     reduceMotion: false,
     theme: "system",
   },
   recentDiagnostics: [],
-  schemaVersion: 2,
-  usage: {
-    activeDays: [],
-    firstOpenedAt: now,
-    lastOpenedAt: now,
-    launchCount: 0,
-  },
+  schemaVersion: 4,
 };
 
 export const clientOptions: ClientOption[] = [
   {
     architectures: ["x64", "ARM64"],
     id: "clash-verge-rev",
+    importNote: "当前隐私订阅不直接转换为 Clash YAML，暂作高级备用。",
     license: "GPL-3.0",
     name: "Clash Verge Rev",
     officialUrl: "https://github.com/clash-verge-rev/clash-verge-rev/releases",
@@ -46,6 +41,7 @@ export const clientOptions: ClientOption[] = [
   {
     architectures: ["x64", "ARM64"],
     id: "v2rayn",
+    importNote: "可直接导入 Glide 生成的隐私订阅。",
     license: "GPL-3.0",
     name: "v2rayN",
     officialUrl: "https://github.com/2dust/v2rayN/releases",
@@ -57,6 +53,7 @@ export const clientOptions: ClientOption[] = [
   {
     architectures: ["x64", "ARM64"],
     id: "hiddify",
+    importNote: "可直接导入 Glide 生成的隐私订阅。",
     license: "GPL-3.0",
     name: "Hiddify",
     officialUrl: "https://github.com/hiddify/hiddify-app/releases",

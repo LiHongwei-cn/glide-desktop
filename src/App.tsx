@@ -9,11 +9,10 @@ import { OverviewPage } from "@/pages/OverviewPage";
 import { RoutesPage } from "@/pages/RoutesPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { SetupPage } from "@/pages/SetupPage";
-import { SubscriptionsPage } from "@/pages/SubscriptionsPage";
 import { getRuntimeInfo } from "@/services/desktop";
 
 const defaultRuntimeInfo: RuntimeInfo = {
-  appVersion: "0.2.2",
+  appVersion: "0.6.1",
   architecture: "检测中",
   desktop: false,
   operatingSystem: "检测中",
@@ -57,9 +56,25 @@ export default function App() {
       {activePage === "overview" ? (
         <OverviewPage
           group={primaryGroup}
-          state={state}
           onNavigate={setActivePage}
-          onRegionChange={(region) => actions.setPreferredRegion(primaryGroup.id, region)}
+          onOptimize={() => actions.optimizeRoutes(primaryGroup.id)}
+          onPrepare={(routeId) =>
+            actions.prepareSelectedSubscription(primaryGroup.id, routeId)
+          }
+          onPrepareNode={(routeId, nodeId) =>
+            actions.prepareSelectedSubscriptionNode(
+              primaryGroup.id,
+              routeId,
+              nodeId,
+            )
+          }
+          onSaveCredential={(secret) =>
+            actions.saveSharedAdminSecret(primaryGroup.id, secret)
+          }
+          onSelectRegion={(region) =>
+            actions.setPreferredRegion(primaryGroup.id, region)
+          }
+          onSelectRoute={(routeId) => actions.selectRoute(primaryGroup.id, routeId)}
         />
       ) : null}
       {activePage === "setup" ? (
@@ -77,13 +92,6 @@ export default function App() {
           onRemoveRoute={actions.removeRoute}
         />
       ) : null}
-      {activePage === "subscriptions" ? (
-        <SubscriptionsPage
-          devices={state.devices}
-          onAddDevice={actions.addDevice}
-          onRevokeDevice={actions.revokeDevice}
-        />
-      ) : null}
       {activePage === "clients" ? <ClientsPage runtimeInfo={runtimeInfo} /> : null}
       {activePage === "diagnostics" ? (
         <DiagnosticsPage
@@ -96,13 +104,10 @@ export default function App() {
       {activePage === "settings" ? (
         <SettingsPage
           diagnosticCount={state.recentDiagnostics.length}
-          deviceCount={state.devices.filter((device) => device.status === "active").length}
           onClearDiagnostics={actions.clearDiagnostics}
-          onResetUsage={actions.resetUsage}
           onUpdatePreferences={actions.updatePreferences}
           preferences={state.preferences}
           runtimeInfo={runtimeInfo}
-          usage={state.usage}
         />
       ) : null}
     </AppShell>

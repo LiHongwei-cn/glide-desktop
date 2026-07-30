@@ -95,6 +95,10 @@ export function ClientsPage({ runtimeInfo }: { runtimeInfo: RuntimeInfo }) {
                 <dt>许可证</dt>
                 <dd>{client.license}</dd>
               </div>
+              <div>
+                <dt>订阅导入</dt>
+                <dd>{client.importNote}</dd>
+              </div>
             </dl>
             <div className="client-card__protocols">
               {client.protocolSupport.map((protocol) => (

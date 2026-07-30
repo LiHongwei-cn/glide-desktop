@@ -9,7 +9,7 @@ import {
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { PageHeader } from "@/components/PageHeader";
 import { Badge, Button } from "@/components/ui";
@@ -17,6 +17,8 @@ import { getRegionName } from "@/domain/health";
 import type {
   AdminInspection,
   AppPage,
+  CloudflareAccount,
+  CloudflareDeploymentPlan,
   LegacyImportDraft,
   RegionCode,
   RouteCandidate,
@@ -31,9 +33,17 @@ import {
   validateSecretInput,
 } from "@/domain/validation";
 import {
+  authorizeCloudflare,
+  cancelCloudflareOAuth,
+  completeCloudflareOAuth,
+  createCloudflareDeploymentPlan,
+  deleteSecret,
+  deployCloudflareConnection,
+  getCloudflareOAuthConfiguration,
   inspectAdminDeployment,
   isDesktopRuntime,
   openOfficialUrl,
+  startCloudflareOAuth,
   storeSecret,
   userFacingDesktopError,
   validateAdminEndpointOnDesktop,
@@ -49,7 +59,6 @@ type SetupMode = "create" | "import";
 type SetupStatus = "idle" | "inspecting" | "ready" | "saved";
 
 const regionOptions: RegionCode[] = ["HK", "JP", "SG", "TW", "US", "UNKNOWN"];
-
 const emptyDraft: LegacyImportDraft = {
   adminUrl: "",
   configuredRegion: "UNKNOWN",
@@ -163,7 +172,7 @@ export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
   return (
     <div className="page">
       <PageHeader
-        eyebrow="密码只进系统钥匙串"
+        eyebrow="密码只进 Glide 本机加密目录"
         subtitle="选择一种方式开始。检查通过后再保存。"
         title="添加连接"
       />
@@ -208,7 +217,7 @@ export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
                 <h2>已加入连接组</h2>
                 <p>
                   {desktop
-                    ? "管理密码已进入系统钥匙串，工作区只保存凭据引用。"
+                    ? "管理密码已进入 Glide 本机加密目录，工作区只保存引用。"
                     : "这是浏览器预览，管理密码没有被保存。"}
                 </p>
                 <div className="form-actions">
@@ -263,7 +272,7 @@ export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
                 </label>
 
                 <label className="field">
-                  <span>预期地区</span>
+                  <span>线路标签地区（可选）</span>
                   <select
                     onChange={(event) =>
                       setDraft((current) => ({
@@ -311,7 +320,7 @@ export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
                   />
                   <small>
                     {desktop
-                      ? "确认后保存到系统钥匙串。"
+                      ? "确认后保存到 Glide 本机加密目录，不再要求电脑密码。"
                       : "浏览器预览不会保存密码。"}
                   </small>
                 </label>
@@ -340,7 +349,7 @@ export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
               icon={ShieldCheck}
               text="只允许 HTTPS 公网管理地址"
             />
-            <SafetyItem icon={LockKeyhole} text="密码保存在系统钥匙串" />
+            <SafetyItem icon={LockKeyhole} text="密码保存在 Glide 本机加密目录" />
             <SafetyItem icon={FileSearch} text="真实登录并只读解析配置" />
             <div className="privacy-note">
               <KeyRound aria-hidden="true" size={18} />
@@ -349,92 +358,617 @@ export function SetupPage({ onAddRoute, onNavigate, routes }: SetupPageProps) {
           </aside>
         </section>
       ) : (
-        <CreateConnectionPanel />
+        <CreateConnectionPanel
+          onAddRoute={onAddRoute}
+          onNavigate={onNavigate}
+          routes={routes}
+        />
       )}
     </div>
   );
 }
 
-function CreateConnectionPanel() {
-  const [openError, setOpenError] = useState("");
+type CreationStatus =
+  | "authorizing"
+  | "configuring"
+  | "deploying"
+  | "idle"
+  | "planning"
+  | "ready"
+  | "saved";
+
+interface CreationVerification {
+  nodeCount: number;
+  regions: RegionCode[];
+  responseTimeMs: number;
+}
+
+function CreateConnectionPanel({
+  onAddRoute,
+  onNavigate,
+  routes,
+}: SetupPageProps) {
+  const [accountId, setAccountId] = useState("");
+  const [accounts, setAccounts] = useState<CloudflareAccount[]>([]);
+  const [advancedTokenOpen, setAdvancedTokenOpen] = useState(false);
+  const [authorizationReference, setAuthorizationReference] = useState("");
+  const [createdCount, setCreatedCount] = useState(0);
+  const [displayName, setDisplayName] = useState("");
+  const [error, setError] = useState("");
+  const [latestVerification, setLatestVerification] =
+    useState<CreationVerification | null>(null);
+  const [plan, setPlan] = useState<CloudflareDeploymentPlan | null>(null);
+  const [oauthConfiguration, setOauthConfiguration] = useState<{
+    available: boolean;
+    setupMessage: string;
+  } | null>(null);
+  const [status, setStatus] = useState<CreationStatus>("idle");
+  const [token, setToken] = useState("");
+  const authorizationReferenceRef = useRef("");
+  const oauthFlowIdRef = useRef("");
+  const desktop = isDesktopRuntime();
+
+  const canAuthorize = desktop && token.trim().length >= 20;
+  const canPlan = Boolean(
+    accountId && authorizationReference && displayName.trim(),
+  );
+
+  useEffect(() => {
+    let active = true;
+    void getCloudflareOAuthConfiguration()
+      .then((configuration) => {
+        if (active) {
+          setOauthConfiguration(configuration);
+          setAdvancedTokenOpen(!configuration.available);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setOauthConfiguration({
+            available: false,
+            setupMessage: "无法读取一键登录配置，请使用高级 Token 方式。",
+          });
+          setAdvancedTokenOpen(true);
+        }
+      });
+    return () => {
+      active = false;
+      if (oauthFlowIdRef.current) {
+        void cancelCloudflareOAuth(oauthFlowIdRef.current);
+      }
+      if (authorizationReferenceRef.current) {
+        void deleteSecret(authorizationReferenceRef.current);
+      }
+    };
+  }, []);
+
+  function clearAuthorizationReference() {
+    authorizationReferenceRef.current = "";
+    setAuthorizationReference("");
+  }
+
+  function retainAuthorizationReference(reference: string) {
+    authorizationReferenceRef.current = reference;
+    setAuthorizationReference(reference);
+  }
 
   async function openCloudflare(url: string) {
-    setOpenError("");
+    setError("");
     try {
       await openOfficialUrl(url);
-    } catch (error) {
-      setOpenError(
-        error instanceof Error ? error.message : "无法打开 Cloudflare 官方页面。",
+    } catch (openError) {
+      setError(
+        openError instanceof Error
+          ? openError.message
+          : "无法打开 Cloudflare 官方页面。",
       );
     }
   }
 
+  async function authorize() {
+    setError("");
+    setStatus("authorizing");
+    const submittedToken = token.trim();
+    setToken("");
+    try {
+      const authorization = await authorizeCloudflare(submittedToken);
+      acceptAuthorization(authorization);
+    } catch (authorizationError) {
+      setError(
+        userFacingDesktopError(
+          authorizationError,
+          "Cloudflare 授权验证失败，请检查 Token 权限。",
+        ),
+      );
+      setStatus("idle");
+    }
+  }
+
+  function acceptAuthorization(authorization: {
+    accounts: CloudflareAccount[];
+    credentialReference: string;
+  }) {
+    setAccounts(authorization.accounts);
+    setAccountId(authorization.accounts[0]?.id ?? "");
+    retainAuthorizationReference(authorization.credentialReference);
+    setStatus("configuring");
+  }
+
+  async function authorizeWithOAuth() {
+    setError("");
+    setStatus("authorizing");
+    try {
+      const oauth = await startCloudflareOAuth();
+      oauthFlowIdRef.current = oauth.flowId;
+      try {
+        await openOfficialUrl(oauth.authorizationUrl);
+      } catch (openError) {
+        await cancelCloudflareOAuth(oauth.flowId);
+        throw openError;
+      }
+      const authorization = await completeCloudflareOAuth(oauth.flowId);
+      oauthFlowIdRef.current = "";
+      acceptAuthorization(authorization);
+    } catch (authorizationError) {
+      oauthFlowIdRef.current = "";
+      setError(
+        userFacingDesktopError(
+          authorizationError,
+          "Cloudflare 登录未完成，请重新尝试。",
+        ),
+      );
+      setStatus("idle");
+    }
+  }
+
+  async function createPlan() {
+    setError("");
+    setPlan(null);
+    setStatus("planning");
+    try {
+      const normalizedName = normalizeDisplayName(displayName, "连接名称");
+      const deploymentPlan = await createCloudflareDeploymentPlan(
+        accountId,
+        authorizationReference,
+        normalizedName,
+      );
+      if (
+        routes.some(
+          (route) => route.adminEndpoint === deploymentPlan.endpointPreview,
+        )
+      ) {
+        throw new Error("这个连接已经在 Glide 中，请直接前往线路页使用。");
+      }
+      setDisplayName(normalizedName);
+      setPlan(deploymentPlan);
+      setStatus("ready");
+    } catch (planError) {
+      setError(
+        userFacingDesktopError(planError, "无法生成部署计划，请稍后重试。"),
+      );
+      setStatus("configuring");
+    }
+  }
+
+  async function deploy() {
+    if (!plan) {
+      return;
+    }
+    setError("");
+    setStatus("deploying");
+    try {
+      const deployment = await deployCloudflareConnection(
+        plan.accountId,
+        plan.authorizationReference,
+        plan.displayName,
+        plan.planHash,
+      );
+      if (
+        routes.some(
+          (route) => route.adminEndpoint === deployment.adminEndpoint,
+        )
+      ) {
+        throw new Error("这个连接已经在 Glide 中，无需重复添加。");
+      }
+      const routeId = crypto.randomUUID();
+      const credentialGroupId = `node:${deployment.inspection.credentialFingerprint}`;
+      onAddRoute({
+        adminAdapter: deployment.inspection.adapter,
+        adminEndpoint: deployment.adminEndpoint,
+        configuredRegion: "UNKNOWN",
+        credentialGroupId,
+        credentialReference: deployment.credentialReference,
+        credentialState: routes.some(
+          (route) => route.credentialGroupId === credentialGroupId,
+        )
+          ? "at-risk"
+          : "healthy",
+        displayName: plan.displayName,
+        endpointLabel: `${redactEndpoint(deployment.adminEndpoint)} · 自动创建并验证`,
+        healthScore: 94,
+        id: routeId,
+        lastCheckedAt: new Date().toISOString(),
+        lastManagedAt: new Date().toISOString(),
+        managementState: "connected",
+        nodePathGroupId: `path:${deployment.inspection.nodePathFingerprint}`,
+        observedRegion: "UNKNOWN",
+        preferredIpCount: deployment.inspection.preferredEndpointCount,
+        protocol: "VLESS",
+        regionEvidence: [],
+        regionVerification: "unverified",
+        status: "active",
+        subscriptionReady: deployment.inspection.subscriptionReady,
+        transport: "WebSocket",
+        version: deployment.inspection.configUpdatedAt ?? "已创建",
+      });
+      const verifiedRegions = [
+        ...new Set(deployment.subscription.nodes.map((node) => node.region)),
+      ];
+      setLatestVerification({
+        nodeCount: deployment.subscription.nodes.length,
+        regions: verifiedRegions,
+        responseTimeMs: deployment.subscription.responseTimeMs,
+      });
+      setCreatedCount((count) => count + 1);
+      setStatus("saved");
+    } catch (deploymentError) {
+      setError(
+        userFacingDesktopError(
+          deploymentError,
+          "创建失败；未完成的本次新建资源将自动回滚。",
+        ),
+      );
+      setStatus("ready");
+    }
+  }
+
+  function resetPlan() {
+    setError("");
+    setPlan(null);
+    setStatus("configuring");
+  }
+
+  function createAnother() {
+    setDisplayName("");
+    setError("");
+    setLatestVerification(null);
+    setPlan(null);
+    setStatus("configuring");
+  }
+
+  async function finishCreation(page: AppPage) {
+    setError("");
+    try {
+      await deleteSecret(authorizationReference);
+      clearAuthorizationReference();
+      onNavigate(page);
+    } catch (deletionError) {
+      setError(
+        userFacingDesktopError(
+          deletionError,
+          "临时授权删除失败，请关闭 Glide 并在 Cloudflare 控制台撤销 Token。",
+        ),
+      );
+    }
+  }
+
+  async function cancelAuthorization() {
+    setError("");
+    try {
+      await deleteSecret(authorizationReference);
+      setAccountId("");
+      setAccounts([]);
+      clearAuthorizationReference();
+      setDisplayName("");
+      setPlan(null);
+      setStatus("idle");
+    } catch (deletionError) {
+      setError(
+        userFacingDesktopError(
+          deletionError,
+          "未能删除临时授权，请在 Cloudflare 控制台撤销该 Token。",
+        ),
+      );
+    }
+  }
+
+  if (status === "saved") {
+    return (
+      <section className="panel create-panel create-panel--centered">
+        <div className="success-state create-success">
+          <span>
+            <Check aria-hidden="true" size={28} />
+          </span>
+          <Badge tone="positive">云端与本机验证通过</Badge>
+          <h2>当前网络验证通过</h2>
+          <p>
+            已成功创建并验证 {createdCount} 条线路。一次授权可以连续创建，
+            无需重复登录；完成后会立即删除本机内存副本。
+          </p>
+          {latestVerification ? (
+            <div className="permission-card">
+              <strong>本次线路三项验收通过</strong>
+              <span>后台登录 · 通过</span>
+              <span>真实订阅 · {latestVerification.responseTimeMs} ms</span>
+              <span>可选节点 · {latestVerification.nodeCount} 个</span>
+              <span>
+                节点标签 ·{" "}
+                {latestVerification.regions.map(getRegionName).join("、")}
+              </span>
+              <small>真实隧道出口仍需导入客户端后测试。</small>
+            </div>
+          ) : null}
+          {error ? (
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          ) : null}
+          <div className="form-actions">
+            <Button onClick={createAnother}>
+              继续创建第 {createdCount + 1} 条
+            </Button>
+            <Button onClick={() => void finishCreation("routes")}>完成并查看线路</Button>
+            <Button
+              onClick={() => void finishCreation("overview")}
+              variant="primary"
+            >
+              完成并返回首页
+            </Button>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   return (
-    <section className="panel oauth-panel">
-      <div className="oauth-panel__icon">
-        <Cloud aria-hidden="true" size={30} />
-      </div>
-      <Badge tone="info">OAuth + PKCE</Badge>
-      <h2>注册 Cloudflare</h2>
-      <p>
-        账号和密码只填写在 Cloudflare 官方页面。自动部署需要后续配置正式 OAuth。
-      </p>
-      <ol className="oauth-steps">
-        <li>
-          <span>1</span>
-          <div>
-            <strong>注册或登录</strong>
-            <p>只使用 Cloudflare 官方页面。</p>
+    <section className="panel create-panel">
+      <header className="create-panel__header">
+        <div className="oauth-panel__icon">
+          <Cloud aria-hidden="true" size={28} />
+        </div>
+        <div>
+          <Badge tone="info">本地安全创建 Beta</Badge>
+          <h2>创建新连接</h2>
+          <p>注册由你完成，Glide 只在明确确认后创建自己的资源。</p>
+        </div>
+        <CreationProgress status={status} />
+      </header>
+
+      {!authorizationReference ? (
+        <div className="create-step">
+          <div className="create-step__intro">
+            <h3>1. 登录 Cloudflare</h3>
+            <p>注册完成后点一次登录并确认权限，Glide 不会看到你的账号密码。</p>
           </div>
-        </li>
-        <li>
-          <span>2</span>
-          <div>
-            <strong>选择最小权限</strong>
-            <p>只授权部署需要的资源。</p>
+          <div className="official-actions">
+            <Button
+              icon={<ExternalLink aria-hidden="true" size={16} />}
+              onClick={() =>
+                void openCloudflare("https://dash.cloudflare.com/sign-up")
+              }
+            >
+              注册 Cloudflare
+            </Button>
           </div>
-        </li>
-        <li>
-          <span>3</span>
-          <div>
-            <strong>确认后再创建</strong>
-            <p>执行前显示所有变更。</p>
+          <Button
+            disabled={
+              !desktop ||
+              !oauthConfiguration?.available ||
+              status === "authorizing"
+            }
+            icon={<Cloud aria-hidden="true" size={16} />}
+            onClick={() => void authorizeWithOAuth()}
+            variant="primary"
+          >
+            {status === "authorizing"
+              ? "请在浏览器完成授权…"
+              : "使用 Cloudflare 登录"}
+          </Button>
+          <p className="oauth-status" role="status">
+            {oauthConfiguration?.setupMessage ?? "正在检查一键登录配置…"}
+          </p>
+
+          <details
+            className="advanced-auth"
+            onToggle={(event) => setAdvancedTokenOpen(event.currentTarget.open)}
+            open={advancedTokenOpen}
+          >
+            <summary>高级方式：使用 API Token</summary>
+            <div className="advanced-auth__content">
+              <p>
+                仅在一键登录不可用或你明确需要自管授权时使用。不要填写账号密码或
+                Global API Key。
+              </p>
+              <Button
+                icon={<ExternalLink aria-hidden="true" size={16} />}
+                onClick={() =>
+                  void openCloudflare(
+                    "https://dash.cloudflare.com/profile/api-tokens",
+                  )
+                }
+              >
+                创建最小权限 Token
+              </Button>
+              <div className="permission-card">
+                <strong>只需要 3 项权限</strong>
+                <span>账户设置 · 读取</span>
+                <span>Workers Scripts · 编辑</span>
+                <span>Workers KV Storage · 编辑</span>
+                <span>有效期 · 建议 1 天</span>
+              </div>
+              <label className="field">
+                <span>API Token</span>
+                <input
+                  autoCapitalize="none"
+                  autoComplete="new-password"
+                  disabled={!desktop || status === "authorizing"}
+                  maxLength={maximumSecretLength}
+                  onChange={(event) => setToken(event.target.value)}
+                  placeholder={
+                    desktop ? "仅在本次创建会话的内存中使用" : "请在桌面应用中完成"
+                  }
+                  spellCheck={false}
+                  type="password"
+                  value={token}
+                />
+                <small>只发送到 Cloudflare 官方 API，不写入工作区或日志。</small>
+              </label>
+              <Button
+                disabled={!canAuthorize || status === "authorizing"}
+                onClick={() => void authorize()}
+              >
+                {status === "authorizing" ? "正在验证授权…" : "验证 Token 并继续"}
+              </Button>
+            </div>
+          </details>
+        </div>
+      ) : status === "ready" || status === "deploying" ? (
+        <div className="create-step">
+          <div className="create-step__intro">
+            <Badge tone="positive">授权与资源检查通过</Badge>
+            <h3>3. 确认创建范围</h3>
+            <p>Glide 会再次核对计划；云端状态变化时会要求重新确认。</p>
           </div>
-        </li>
-      </ol>
-      <div className="permission-list">
-        <span>
-          <Check aria-hidden="true" size={15} />
-          不申请账单权限
-        </span>
-        <span>
-          <Check aria-hidden="true" size={15} />
-          不使用全局 API Key
-        </span>
-      </div>
-      <div className="form-actions">
-        <Button
-          icon={<ExternalLink aria-hidden="true" size={16} />}
-          onClick={() => void openCloudflare("https://dash.cloudflare.com/sign-up")}
-          variant="primary"
+          <div className="deployment-summary">
+            <ReviewRow label="Cloudflare 账号" value={plan?.accountName ?? "—"} />
+            <ReviewRow label="连接名称" value={plan?.displayName ?? "—"} />
+            <ReviewRow
+              label="部署入口"
+              value={plan ? redactEndpoint(plan.endpointPreview) : "—"}
+            />
+          </div>
+          <div className="deployment-actions">
+            {plan?.actions.map((action) => (
+              <div key={`${action.label}-${action.resource}`}>
+                <Check aria-hidden="true" size={16} />
+                <span>
+                  <strong>{action.label}</strong>
+                  <small>{deploymentActionLabel(action.action)}</small>
+                </span>
+                <code>{action.resource}</code>
+              </div>
+            ))}
+          </div>
+          <div className="review-warning">
+            <ShieldCheck aria-hidden="true" size={18} />
+            <p>
+              使用锁定版本 {plan?.sourceCommit.slice(0, 10)}；不读取账单、不删除已有资源。
+              如果验证失败，将回滚本次 Worker 和配置存储
+              {plan?.actions.some(
+                (action) =>
+                  action.label === "公共子域" && action.action === "create",
+              )
+                ? "；账号级公共子域会安全保留"
+                : ""}
+              。
+            </p>
+          </div>
+          <div className="form-actions">
+            <Button disabled={status === "deploying"} onClick={resetPlan}>
+              返回修改
+            </Button>
+            <Button
+              disabled={!plan || status === "deploying"}
+              onClick={() => void deploy()}
+              variant="primary"
+            >
+              {status === "deploying"
+                ? "正在创建并验证，约 1 分钟…"
+                : "确认并创建"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <form
+          className="create-step"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void createPlan();
+          }}
         >
-          打开官方注册页
-        </Button>
-        <Button
-          icon={<ExternalLink aria-hidden="true" size={16} />}
-          onClick={() => void openCloudflare("https://dash.cloudflare.com/")}
-        >
-          已有账号，打开控制台
-        </Button>
-      </div>
-      {openError ? (
-        <p className="form-error" role="alert">
-          {openError}
+          <div className="create-step__intro">
+            <Badge tone="positive">授权已安全保存</Badge>
+            <h3>2. 为这条线路命名</h3>
+            <p>
+              Cloudflare Worker 是全球线路入口；创建后可以按订阅标签选择节点，真实出口需在客户端验收。
+            </p>
+          </div>
+          <label className="field">
+            <span>Cloudflare 账号</span>
+            <select
+              onChange={(event) => setAccountId(event.target.value)}
+              value={accountId}
+            >
+              {accounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>连接名称</span>
+            <input
+              autoComplete="off"
+              maxLength={maximumDisplayNameLength}
+              onChange={(event) => setDisplayName(event.target.value)}
+              placeholder="例如：我的私人连接"
+              value={displayName}
+            />
+          </label>
+          <div className="review-warning">
+            <ShieldCheck aria-hidden="true" size={18} />
+            <p>
+              当前创建的是 workers.dev 试用入口。Glide 会在创建后实测当前网络，但不能保证它在其他网络或中国大陆持续可达。
+            </p>
+          </div>
+          <Button
+            disabled={!canPlan || status === "planning"}
+            type="submit"
+            variant="primary"
+          >
+            {status === "planning" ? "正在检查云端资源…" : "预览创建方案"}
+          </Button>
+          <Button
+            disabled={status === "planning"}
+            onClick={() => void cancelAuthorization()}
+            type="button"
+          >
+            取消并删除授权
+          </Button>
+        </form>
+      )}
+
+      {error ? (
+        <p className="form-error create-panel__error" role="alert">
+          {error}
         </p>
       ) : null}
-      <small>自动部署按钮会在 OAuth Client ID 与回调地址完成正式配置后开放。</small>
+      <footer className="create-panel__footer">
+        <LockKeyhole aria-hidden="true" size={15} />
+        <span>无遥测 · 凭据仅保存在本机 · 云端变更前必须确认</span>
+      </footer>
     </section>
   );
+}
+
+function CreationProgress({ status }: { status: CreationStatus }) {
+  const current =
+    status === "idle" || status === "authorizing"
+      ? 1
+      : status === "configuring" || status === "planning"
+        ? 2
+        : 3;
+  return <span className="creation-progress">{current} / 3</span>;
+}
+
+function deploymentActionLabel(action: CloudflareDeploymentPlan["actions"][number]["action"]) {
+  const labels = {
+    create: "新建",
+    enable: "启用",
+    reuse: "复用本机已识别资源",
+  };
+  return labels[action];
 }
 
 function ImportReview({
@@ -460,7 +994,10 @@ function ImportReview({
       <h2>确认导入范围</h2>
       <div className="review-list">
         <ReviewRow label="线路名称" value={draft.displayName} />
-        <ReviewRow label="预期地区" value={getRegionName(draft.configuredRegion)} />
+        <ReviewRow
+          label="线路标签地区"
+          value={getRegionName(draft.configuredRegion)}
+        />
         <ReviewRow label="管理地址" value={redactEndpoint(validatedUrl)} />
         <ReviewRow
           label="面板适配"
@@ -488,7 +1025,7 @@ function ImportReview({
         />
         <ReviewRow
           label="密码处理"
-          value={desktop ? "保存到系统钥匙串" : "预览模式，不保存"}
+          value={desktop ? "保存到 Glide 本机加密目录" : "预览模式，不保存"}
         />
         <ReviewRow label="线上变更" value="无，只读导入" />
       </div>

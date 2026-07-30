@@ -64,7 +64,7 @@ async fn probe_endpoint(endpoint: &str) -> EndpointProbe {
         }
     };
     let hostname = parsed_url.host_str().unwrap_or_default();
-    let client = match build_pinned_client(hostname, &resolved_addresses, "Glide-Diagnostics/0.2.2")
+    let client = match build_pinned_client(hostname, &resolved_addresses, "Glide-Diagnostics/0.3.0")
     {
         Ok(client) => client,
         Err(detail) => {
