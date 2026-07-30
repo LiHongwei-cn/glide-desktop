@@ -12,7 +12,7 @@ import { SetupPage } from "@/pages/SetupPage";
 import { getRuntimeInfo } from "@/services/desktop";
 
 const defaultRuntimeInfo: RuntimeInfo = {
-  appVersion: "0.6.1",
+  appVersion: "0.6.2",
   architecture: "检测中",
   desktop: false,
   operatingSystem: "检测中",

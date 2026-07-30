@@ -532,6 +532,23 @@ p {
   min-width: 0;
 }
 
+.target-node__heading-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.target-node__heading-actions .button {
+  min-height: 30px;
+  padding: 0 8px;
+  font-size: 10px;
+}
+
+.target-node__heading-actions .is-spinning {
+  animation: node-test-spin 900ms linear infinite;
+}
+
 .target-node__heading span,
 .target-node__heading p,
 .target-node__option small,
@@ -642,6 +659,12 @@ p {
 .target-node__note {
   margin: 10px 0 0;
   line-height: 1.5;
+}
+
+@keyframes node-test-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .subscription-ready {
@@ -2356,6 +2379,8 @@ p {
 .reduce-motion *,
 .reduce-motion *::before,
 .reduce-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
   scroll-behavior: auto !important;
   transition-duration: 0.001ms !important;
 }
@@ -2364,6 +2389,8 @@ p {
   *,
   *::before,
   *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.001ms !important;
   }

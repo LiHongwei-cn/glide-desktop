@@ -2,7 +2,7 @@
 
 ## 结论
 
-Glide 0.6.1 提供本地优先的 Cloudflare Workers 创建 Beta。首选流程使用系统浏览器
+Glide 0.6.2 提供本地优先的 Cloudflare Workers 创建 Beta。首选流程使用系统浏览器
 OAuth Authorization Code + S256 PKCE；Glide 不收集账号密码，也不接受 Global API
 Key。发行包未配置已审核的发布者 Client ID 时，界面会明确禁用一键登录并展开高级、
 最小权限、短有效期 API Token 方式，不会伪装成可用。

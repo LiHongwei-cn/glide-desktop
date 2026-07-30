@@ -3,9 +3,54 @@ use std::{
     time::Duration,
 };
 
-use reqwest::{redirect::Policy, Client};
+use reqwest::{header::ACCEPT, redirect::Policy, Client};
+use serde::Deserialize;
 use tokio::net::lookup_host;
 use url::Url;
+
+const MAXIMUM_DNS_RESPONSE_BYTES: usize = 65_536;
+const NODE_DNS_TIMEOUT: Duration = Duration::from_secs(3);
+const TRUSTED_DNS_RESOLVERS: [&str; 2] = [
+    "https://dns.alidns.com/resolve",
+    "https://cloudflare-dns.com/dns-query",
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeResolutionSource {
+    DirectIp,
+    SystemDns,
+    TrustedDns,
+}
+
+impl NodeResolutionSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectIp => "direct-ip",
+            Self::SystemDns => "system-dns",
+            Self::TrustedDns => "trusted-dns",
+        }
+    }
+}
+
+pub struct PublicNodeResolution {
+    pub addresses: Vec<SocketAddr>,
+    pub source: NodeResolutionSource,
+}
+
+#[derive(Deserialize)]
+struct DnsJsonAnswer {
+    data: String,
+    #[serde(rename = "type")]
+    record_type: u16,
+}
+
+#[derive(Deserialize)]
+struct DnsJsonResponse {
+    #[serde(rename = "Answer", default)]
+    answers: Vec<DnsJsonAnswer>,
+    #[serde(rename = "Status")]
+    status: u16,
+}
 
 pub fn build_pinned_client(
     hostname: &str,
@@ -55,8 +100,44 @@ pub async fn validate_public_host(url: &Url) -> Result<Vec<SocketAddr>, String> 
     validate_resolved_host(url, true).await
 }
 
-pub async fn validate_public_node_host(url: &Url) -> Result<Vec<SocketAddr>, String> {
-    validate_resolved_host(url, false).await
+pub async fn resolve_public_node_host(
+    hostname: &str,
+    port: u16,
+) -> Result<PublicNodeResolution, String> {
+    if let Ok(ip_address) = hostname.parse::<IpAddr>() {
+        let addresses = vec![SocketAddr::new(ip_address, port)];
+        return if addresses_are_public(&addresses) {
+            Ok(PublicNodeResolution {
+                addresses,
+                source: NodeResolutionSource::DirectIp,
+            })
+        } else {
+            Err("节点地址不是可测试的公网地址。".into())
+        };
+    }
+
+    let system_addresses = lookup_host((hostname, port))
+        .await
+        .map(|addresses| addresses.collect::<Vec<_>>())
+        .unwrap_or_default();
+    if addresses_are_public(&system_addresses) {
+        return Ok(PublicNodeResolution {
+            addresses: system_addresses,
+            source: NodeResolutionSource::SystemDns,
+        });
+    }
+    if !system_addresses.is_empty() && !addresses_are_tls_proxy_fake_ips(&system_addresses) {
+        return Err("节点域名解析到了本机、私网或未知保留地址。".into());
+    }
+
+    let addresses = resolve_with_trusted_dns(hostname, port).await?;
+    if !addresses_are_public(&addresses) {
+        return Err("可信 DNS 没有返回可测试的公网节点地址。".into());
+    }
+    Ok(PublicNodeResolution {
+        addresses,
+        source: NodeResolutionSource::TrustedDns,
+    })
 }
 
 async fn validate_resolved_host(
@@ -79,6 +160,78 @@ async fn validate_resolved_host(
     }
 
     Err("域名解析到了本机、私网或未知保留地址，已停止连接。".into())
+}
+
+async fn resolve_with_trusted_dns(hostname: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    let client = Client::builder()
+        .connect_timeout(NODE_DNS_TIMEOUT)
+        .no_proxy()
+        .redirect(Policy::none())
+        .timeout(NODE_DNS_TIMEOUT)
+        .user_agent("Glide-Node-DNS/0.6.2")
+        .build()
+        .map_err(|_| "无法创建节点 DNS 客户端。".to_string())?;
+
+    for resolver in TRUSTED_DNS_RESOLVERS {
+        for (record_name, record_type) in [("A", 1_u16), ("AAAA", 28_u16)] {
+            let response = client
+                .get(resolver)
+                .header(ACCEPT, "application/dns-json")
+                .query(&[("name", hostname), ("type", record_name)])
+                .send()
+                .await;
+            let Ok(response) = response else {
+                continue;
+            };
+            if !response.status().is_success() {
+                continue;
+            }
+            let Some(bytes) = read_bounded_dns_response(response).await else {
+                continue;
+            };
+            let addresses = parse_dns_json_addresses(&bytes, record_type, port);
+            if addresses_are_public(&addresses) {
+                return Ok(addresses);
+            }
+        }
+    }
+
+    Err("系统 DNS 受到 Fake-IP 影响，可信 DNS 也未能解析节点。".into())
+}
+
+async fn read_bounded_dns_response(mut response: reqwest::Response) -> Option<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAXIMUM_DNS_RESPONSE_BYTES as u64)
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if bytes.len().saturating_add(chunk.len()) > MAXIMUM_DNS_RESPONSE_BYTES {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Some(bytes)
+}
+
+fn parse_dns_json_addresses(bytes: &[u8], record_type: u16, port: u16) -> Vec<SocketAddr> {
+    let Ok(response) = serde_json::from_slice::<DnsJsonResponse>(bytes) else {
+        return Vec::new();
+    };
+    if response.status != 0 {
+        return Vec::new();
+    }
+    response
+        .answers
+        .into_iter()
+        .filter(|answer| answer.record_type == record_type)
+        .filter_map(|answer| answer.data.parse::<IpAddr>().ok())
+        .map(|ip_address| SocketAddr::new(ip_address, port))
+        .filter(|address| !is_forbidden_ip(address.ip()))
+        .take(32)
+        .collect()
 }
 
 fn addresses_are_public(addresses: &[SocketAddr]) -> bool {
@@ -173,7 +326,7 @@ fn is_forbidden_ipv6(address: Ipv6Addr) -> bool {
 mod tests {
     use super::{
         addresses_are_public, addresses_are_tls_proxy_fake_ips, is_forbidden_ip,
-        parse_admin_endpoint,
+        parse_admin_endpoint, parse_dns_json_addresses, resolve_with_trusted_dns,
     };
 
     #[test]
@@ -217,5 +370,43 @@ mod tests {
         ];
 
         assert!(!addresses_are_public(&addresses));
+    }
+
+    #[test]
+    fn accepts_only_public_addresses_from_dns_json() {
+        let response = br#"{
+          "Status": 0,
+          "Answer": [
+            { "data": "104.21.94.193", "name": "edge.example.com.", "type": 1 },
+            { "data": "198.18.0.1", "name": "edge.example.com.", "type": 1 },
+            { "data": "edge.example.com.", "name": "alias.example.com.", "type": 5 }
+          ]
+        }"#;
+
+        assert_eq!(
+            parse_dns_json_addresses(response, 1, 443),
+            vec!["104.21.94.193:443".parse().unwrap()],
+        );
+    }
+
+    #[test]
+    fn rejects_failed_or_malformed_dns_json() {
+        assert!(parse_dns_json_addresses(br#"{"Status": 3}"#, 1, 443).is_empty());
+        assert!(parse_dns_json_addresses(b"not-json", 1, 443).is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires access to a public trusted DNS endpoint"]
+    fn trusted_dns_resolves_a_real_public_address() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let addresses = runtime
+            .block_on(resolve_with_trusted_dns("example.com", 443))
+            .unwrap();
+
+        assert!(addresses_are_public(&addresses));
+        assert!(addresses.iter().all(|address| address.port() == 443));
     }
 }

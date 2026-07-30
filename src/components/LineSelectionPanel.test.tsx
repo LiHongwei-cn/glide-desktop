@@ -24,7 +24,11 @@ function createSubscriptionNodes() {
     {
       displayName: "🇯🇵 日本 01",
       id: "0123456789ab",
+      latencyJitterMs: 12,
+      latencyMethod: "tls" as const,
       latencyMs: 118,
+      latencySamples: 3,
+      latencySource: "trusted-dns" as const,
       latencyStatus: "reachable" as const,
       protocol: "VLESS",
       region: "JP" as const,
@@ -94,7 +98,8 @@ describe("LineSelectionPanel", () => {
     expect(screen.getByText(/另有 1 条线路未通过/)).toBeInTheDocument();
     expect(screen.getByText(/2 轮真实验证/)).toBeInTheDocument();
     expect(screen.getByText(/波动 80 ms/)).toBeInTheDocument();
-    expect(screen.getByText(/入口延迟 118 ms/)).toBeInTheDocument();
+    expect(screen.getByText(/TLS入口 118 ms/)).toBeInTheDocument();
+    expect(screen.getByText(/3次 · 波动 12 ms · 已绕过 Fake-IP/)).toBeInTheDocument();
     expect(screen.getByText(/入口延迟超时/)).toBeInTheDocument();
   });
 
@@ -113,6 +118,85 @@ describe("LineSelectionPanel", () => {
       screen.getByRole("heading", { name: "按标签选择节点" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("retests every visible node without reopening the line picker", async () => {
+    const props = defaultProps();
+    props.onPrepare
+      .mockResolvedValueOnce({
+        nodes: createSubscriptionNodes(),
+        responseTimeMs: 700,
+        subscriptionUrl: "https://example.com/sub?token=test",
+      })
+      .mockResolvedValueOnce({
+        nodes: [
+          {
+            ...createSubscriptionNodes()[0],
+            latencyJitterMs: 4,
+            latencyMs: 66,
+            latencySource: "system-dns",
+          },
+          createSubscriptionNodes()[1],
+        ],
+        responseTimeMs: 640,
+        subscriptionUrl: "https://example.com/sub?token=test",
+      });
+    render(<LineSelectionPanel {...props} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "自己选线路" }));
+    fireEvent.click(screen.getByRole("button", { name: "选择线路 线路 2" }));
+    await screen.findByRole("button", { name: "重新测速" });
+    fireEvent.click(screen.getByRole("button", { name: "重新测速" }));
+
+    expect(await screen.findByText(/节点测速完成：1\/2/)).toBeInTheDocument();
+    expect(screen.getByText(/TLS入口 66 ms · 3次 · 波动 4 ms/)).toBeInTheDocument();
+    expect(props.onPrepare).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("explains DNS, TLS, and transparent-proxy failures separately", async () => {
+    const props = defaultProps();
+    props.onPrepare.mockResolvedValue({
+      nodes: [
+        {
+          displayName: "DNS 节点",
+          id: "111111111111",
+          latencyStatus: "dns-error",
+          protocol: "VLESS",
+          region: "JP",
+        },
+        {
+          displayName: "TLS 节点",
+          id: "222222222222",
+          latencyStatus: "tls-error",
+          protocol: "VLESS",
+          region: "JP",
+        },
+        {
+          displayName: "TCP 节点",
+          id: "333333333333",
+          latencyStatus: "intercepted",
+          protocol: "Shadowsocks",
+          region: "JP",
+        },
+      ],
+      responseTimeMs: 700,
+      subscriptionUrl: "https://example.com/sub?token=test",
+    });
+    render(<LineSelectionPanel {...props} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "自己选线路" }));
+    fireEvent.click(screen.getByRole("button", { name: "选择线路 线路 2" }));
+
+    expect(
+      await screen.findByRole("button", { name: "选择节点 DNS 节点" }),
+    ).toHaveTextContent("节点 DNS 解析失败");
+    expect(
+      screen.getByRole("button", { name: "选择节点 TLS 节点" }),
+    ).toHaveTextContent("TLS 握手失败");
+    expect(
+      screen.getByRole("button", { name: "选择节点 TCP 节点" }),
+    ).toHaveTextContent("TCP 被本机代理接管");
   });
 
   it("recommends the verified line over a slightly healthier conflict", () => {

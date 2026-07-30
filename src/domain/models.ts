@@ -267,8 +267,18 @@ export interface RuntimeInfo {
 export interface SubscriptionNode {
   displayName: string;
   id: string;
+  latencyJitterMs?: number;
+  latencyMethod?: "tcp" | "tls";
   latencyMs?: number;
-  latencyStatus?: "reachable" | "timeout" | "unavailable";
+  latencySamples?: number;
+  latencySource?: "direct-ip" | "system-dns" | "trusted-dns";
+  latencyStatus?:
+    | "dns-error"
+    | "intercepted"
+    | "reachable"
+    | "timeout"
+    | "tls-error"
+    | "unavailable";
   protocol: string;
   region: RegionCode;
 }

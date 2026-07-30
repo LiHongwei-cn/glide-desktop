@@ -8,6 +8,7 @@ import {
   MapPin,
   MousePointer2,
   QrCode,
+  RefreshCw,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -118,10 +119,12 @@ export function LineSelectionPanel({
           availableNodes={controller.availableNodes}
           nodes={controller.lineNodes}
           onPrepare={controller.selectNode}
+          onRetest={controller.retestLatency}
           onSelectRegion={controller.selectRegion}
           preparingNodeId={controller.preparingNodeId}
           region={controller.region}
           route={selectedRoute}
+          testingLatency={controller.testingLatency}
         />
         {controller.lineSubscription ? (
           <SubscriptionReady
@@ -225,6 +228,7 @@ function useLineSelectionController({
   const [region, setRegion] = useState<RegionCode>(group.preferredRegion);
   const [routeOptions, setRouteOptions] = useState<OptimizedRouteOption[]>([]);
   const [savingCredential, setSavingCredential] = useState(false);
+  const [testingLatency, setTestingLatency] = useState(false);
 
   useEffect(() => {
     if (group.selectedRouteId) {
@@ -361,6 +365,64 @@ function useLineSelectionController({
       setFeedback(userFacingDesktopError(error, "这个节点已变化，请重新选择线路。"));
     } finally {
       setPreparingNodeId("");
+    }
+  }
+
+  async function retestLatency() {
+    if (!activeRouteId) {
+      return;
+    }
+    const route = group.routes.find((candidate) => candidate.id === activeRouteId);
+    if (!route) {
+      return;
+    }
+    setFeedback("");
+    setTestingLatency(true);
+    try {
+      const prepared = await onPrepare(activeRouteId);
+      const reachableCount = prepared.nodes.filter(
+        (node) => node.latencyStatus === "reachable",
+      ).length;
+      setLineNodes(prepared.nodes);
+      setNodeSubscription(null);
+      setRouteOptions((currentOptions) => {
+        const nextOption = {
+          nodes: prepared.nodes,
+          routeId: activeRouteId,
+          routeName: route.displayName,
+          stabilityDeltaMs: 0,
+          subscriptionUrl: prepared.subscriptionUrl,
+          verificationSamples: 1,
+          verifiedInMs: prepared.responseTimeMs,
+        };
+        if (!currentOptions.some((option) => option.routeId === activeRouteId)) {
+          return [nextOption];
+        }
+        return currentOptions.map((option) =>
+          option.routeId === activeRouteId ? nextOption : option,
+        );
+      });
+      setLineSubscription((currentResult) => ({
+        routeName: route.displayName,
+        stabilityDeltaMs: currentResult?.stabilityDeltaMs,
+        subscriptionUrl: prepared.subscriptionUrl,
+        verificationSamples: currentResult?.verificationSamples,
+        verifiedInMs: prepared.responseTimeMs,
+      }));
+      setFeedback(
+        reachableCount > 0
+          ? `节点测速完成：${reachableCount}/${prepared.nodes.length} 个入口取得三次握手中位数。`
+          : "节点测速完成，但当前网络未能连接这些公网入口；请关闭失效线路或稍后重试。",
+      );
+    } catch (error) {
+      if (error instanceof CredentialSetupRequiredError) {
+        setCredentialSetupOpen(true);
+        setFeedback("首次升级需要保存一次后台管理密码。");
+      } else {
+        setFeedback(userFacingDesktopError(error, "节点测速失败，请稍后重试。"));
+      }
+    } finally {
+      setTestingLatency(false);
     }
   }
 
@@ -505,12 +567,14 @@ function useLineSelectionController({
     preparingNodeId,
     preparingRouteId,
     qrPayload,
+    retestLatency: () => void retestLatency(),
     saveCredential,
     savingCredential,
     selectNode: (nodeId: string) => void selectNode(nodeId),
     selectRegion,
     selectRoute: (routeId: string) => void selectRoute(routeId),
     showQr: (kind: ExportKind) => void showQr(kind),
+    testingLatency,
     region,
   };
 }
@@ -607,7 +671,7 @@ function SelectionFeedback({ feedback }: { feedback: string }) {
   if (!feedback) {
     return null;
   }
-  const isError = ["失败", "无法", "没有"].some((keyword) =>
+  const isError = ["失败", "无法", "未能", "没有"].some((keyword) =>
     feedback.includes(keyword),
   );
   return (
@@ -811,18 +875,22 @@ function TargetNodeSelection({
   availableNodes,
   nodes,
   onPrepare,
+  onRetest,
   onSelectRegion,
   preparingNodeId,
   region,
   route,
+  testingLatency,
 }: {
   availableNodes: SubscriptionNode[];
   nodes: SubscriptionNode[];
   onPrepare: (nodeId: string) => void;
+  onRetest: () => void;
   onSelectRegion: (region: RegionCode) => void;
   preparingNodeId: string;
   region: RegionCode;
   route?: Route;
+  testingLatency: boolean;
 }) {
   if (!route || nodes.length === 0) {
     return null;
@@ -849,7 +917,23 @@ function TargetNodeSelection({
             {route.displayName} · 已从真实订阅发现 {nodes.length} 个节点
           </p>
         </div>
-        <Badge tone="info">标签来自节点备注</Badge>
+        <div className="target-node__heading-actions">
+          <Badge tone="info">标签来自节点备注</Badge>
+          <Button
+            disabled={testingLatency || Boolean(preparingNodeId)}
+            icon={
+              <RefreshCw
+                aria-hidden="true"
+                className={testingLatency ? "is-spinning" : undefined}
+                size={14}
+              />
+            }
+            onClick={onRetest}
+            variant="tertiary"
+          >
+            {testingLatency ? "正在测速" : "重新测速"}
+          </Button>
+        </div>
       </div>
       <div aria-label="节点标签区域" className="target-node__regions" role="group">
         {availableRegions.map((candidate) => (
@@ -872,7 +956,7 @@ function TargetNodeSelection({
           <button
             aria-label={`选择节点 ${node.displayName}`}
             className="target-node__option"
-            disabled={Boolean(preparingNodeId)}
+            disabled={testingLatency || Boolean(preparingNodeId)}
             key={node.id}
             onClick={() => onPrepare(node.id)}
             type="button"
@@ -891,7 +975,9 @@ function TargetNodeSelection({
               tone={
                 node.latencyStatus === "reachable"
                   ? "positive"
-                  : node.region === "UNKNOWN"
+                  : node.latencyStatus && node.latencyStatus !== "unavailable"
+                    ? "warning"
+                    : node.region === "UNKNOWN"
                     ? "warning"
                     : "neutral"
               }
@@ -902,8 +988,8 @@ function TargetNodeSelection({
         ))}
       </div>
       <p className="target-node__note">
-        “入口延迟”是从本机到节点端口的 TCP 连通耗时，不是带宽；区域来自节点名称，
-        不等同于出口 IP 实测。
+        TLS 节点会完成证书校验和响应头握手，再取三次中位数；检测到 Fake-IP
+        时会改用可信 DNS。普通 TCP 的瞬时本机接管结果不会冒充真实延迟。
       </p>
     </div>
   );
@@ -1013,12 +1099,27 @@ function formatVerificationSummary(result: LineSubscriptionResult): string {
 
 function formatNodeLatency(node: SubscriptionNode): string {
   if (node.latencyStatus === "reachable" && node.latencyMs !== undefined) {
-    return `入口延迟 ${node.latencyMs} ms`;
+    const method = node.latencyMethod === "tls" ? "TLS" : "TCP";
+    const sampleSummary =
+      (node.latencySamples ?? 0) > 1 ? ` · ${node.latencySamples}次` : "";
+    const jitterSummary =
+      node.latencyJitterMs !== undefined ? ` · 波动 ${node.latencyJitterMs} ms` : "";
+    const dnsSummary = node.latencySource === "trusted-dns" ? " · 已绕过 Fake-IP" : "";
+    return `${method}入口 ${node.latencyMs} ms${sampleSummary}${jitterSummary}${dnsSummary}`;
   }
   if (node.latencyStatus === "timeout") {
     return "入口延迟超时";
   }
-  return "入口延迟不可测";
+  if (node.latencyStatus === "dns-error") {
+    return "节点 DNS 解析失败";
+  }
+  if (node.latencyStatus === "tls-error") {
+    return "TLS 握手失败";
+  }
+  if (node.latencyStatus === "intercepted") {
+    return "TCP 被本机代理接管";
+  }
+  return "等待重新测速";
 }
 
 function isSelectable(route: Route): boolean {
