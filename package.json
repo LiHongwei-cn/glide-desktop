@@ -10,7 +10,7 @@
   "description": "A local-first personal network deployment and health manager.",
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.0",
-    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/jest-dom": "^7.0.0",
     "@testing-library/react": "^16.1.0",
     "@types/node": "^22.10.2",
     "@types/qrcode": "^1.5.5",
